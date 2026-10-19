@@ -1,0 +1,651 @@
+use std::collections::HashMap;
+use std::convert::Infallible;
+
+use axum::Router;
+use axum::extract::{Path, Query, State};
+use axum::http::request::Parts;
+use axum::http::{StatusCode, header};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::routing::get;
+use maud::{DOCTYPE, Markup, PreEscaped, html};
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
+
+use crate::Wiki;
+use crate::document::{Document, slug};
+use crate::draw::{DrawCx, WikiHref, draw_blocks, tag_href};
+use crate::index::{FsKind, PageRef, Resolution, fs_kind, search_terms};
+use crate::links::local_href;
+use crate::names::{
+    LinkTarget, encode_component, folder_url, image_type_of, path_to_url, url_to_path, url_to_rel,
+};
+use crate::parse::{Host, parse};
+use crate::template::{BodyCtx, DocumentMeta, HeadCtx, PageKind, Template};
+
+const HLJS_CSS: &str =
+    "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/github.min.css";
+const HLJS_DARK_CSS: &str =
+    "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/github-dark.min.css";
+const HLJS_JS: &str =
+    "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/highlight.min.js";
+const MERMAID_JS: &str = "https://cdn.jsdelivr.net/npm/mermaid@12/dist/mermaid.esm.min.mjs";
+const HTMX_JS: &str = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/dist/htmx.min.js";
+const HTMX_SSE_JS: &str = "https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4/dist/sse.min.js";
+
+/// How many pages "Recently edited" shows.
+const RECENT: usize = 10;
+/// How many tags the tag cloud shows.
+const CLOUD: usize = 50;
+
+const STYLE: &str = "
+:root { color-scheme: light dark;
+  --fg: #1f2328; --bg: #ffffff; --muted: #59636e; --link: #0969da; --unresolved: #bc4c00;
+  --border: #d1d9e0; --code-bg: #eff2f5; --line-target: #fff8c5; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e6edf3; --bg: #0d1117; --muted: #9198a1; --link: #4493f8; --unresolved: #db6d28;
+    --border: #3d444d; --code-bg: #151b23; --line-target: #bb800926; }
+}
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  max-width: 48rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; line-height: 1.7;
+  color: var(--fg); background: var(--bg); }
+header { margin-bottom: 1.5rem; color: var(--muted); }
+header nav a, header .tags a { margin-right: 0.25rem; }
+p, ul, ol, pre, table, blockquote, details { margin: 0 0 1.25rem; }
+li { margin: 0.4rem 0; }
+h1, h2, h3, h4, h5, h6 { line-height: 1.3; margin: 2rem 0 1rem; }
+a.anchor { margin-left: 0.4rem; color: var(--muted); text-decoration: none; opacity: 0; }
+:is(h1, h2, h3, h4, h5, h6):hover > a.anchor, a.anchor:focus { opacity: 1; }
+a { color: var(--link); }
+a.unresolved { color: var(--unresolved); }
+a.tag { text-decoration: none; }
+.muted { color: var(--muted); }
+pre { overflow-x: auto; }
+code { font-size: 0.9em; }
+:not(pre) > code { background: var(--code-bg); }
+table { border-collapse: collapse; }
+th, td { border: 1px solid var(--border); padding: 0.3rem 0.75rem; text-align: left; vertical-align: top; }
+details summary { cursor: pointer; color: var(--muted); }
+details table { margin-top: 0.75rem; }
+.line-target { background: var(--line-target); }
+";
+
+/// Line links, `#:N`: the last block in the htmx root whose `data-line` is
+/// at most N, and that is laid out, gets the `line-target` class and is
+/// scrolled to, on load and on `hashchange`. A live-update swap marks it
+/// again without scrolling.
+const LINE_JS: &str = "
+(() => {
+  const mark = (scroll) => {
+    document.querySelectorAll('.line-target').forEach((el) => el.classList.remove('line-target'));
+    const m = /^#:(\\d+)$/.exec(location.hash);
+    if (!m) return;
+    const n = Number(m[1]);
+    let hit = null;
+    for (const el of document.querySelectorAll('#htmx-root [data-line]')) {
+      if (Number(el.dataset.line) <= n && el.getClientRects().length) hit = el;
+    }
+    if (!hit) return;
+    hit.classList.add('line-target');
+    if (scroll) hit.scrollIntoView({ block: 'center' });
+  };
+  mark(true);
+  addEventListener('hashchange', () => mark(true));
+  document.addEventListener('htmx:afterSwap', (e) => {
+    if (e.detail.target?.id === 'htmx-root') mark(false);
+  });
+})();
+";
+
+pub fn router<P: Host, S: Clone + Send + Sync + 'static>(wiki: Wiki<P>) -> Router<S> {
+    let base = wiki.inner.base.clone();
+    let mut router = Router::new()
+        .route(&format!("{base}/"), get(root_index::<P>))
+        .route(&format!("{base}/_wiki/link"), get(link_page::<P>))
+        .route(&format!("{base}/_wiki/tag/{{*tag}}"), get(tag_page::<P>))
+        .route(&format!("{base}/_wiki/search"), get(search_page::<P>))
+        .route(
+            &format!("{base}/_wiki/events/{{*path}}"),
+            get(page_events::<P>),
+        )
+        .route(&format!("{base}/{{*path}}"), get(path_page::<P>));
+    if !base.is_empty() {
+        let to = format!("{base}/");
+        router = router.route(&base, get(move || async move { Redirect::permanent(&to) }));
+    }
+    router.with_state(wiki)
+}
+
+struct Failure(anyhow::Error);
+
+impl<E: Into<anyhow::Error>> From<E> for Failure {
+    fn from(e: E) -> Failure {
+        Failure(e.into())
+    }
+}
+
+impl IntoResponse for Failure {
+    fn into_response(self) -> Response {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("{:#}", self.0)).into_response()
+    }
+}
+
+type Result<T = Response> = std::result::Result<T, Failure>;
+
+/// The content a page's template embeds.
+type Content<'a, P> = dyn Fn(&BodyCtx<'_, P>) -> Markup + Sync + 'a;
+
+/// What the library knows about a page before its template draws it.
+struct Page<'a> {
+    kind: PageKind,
+    title: String,
+    /// The folder the breadcrumbs lead down to, or `None` for none.
+    crumbs: Option<&'a str>,
+    /// A document page's URL path without the base, which wires the htmx
+    /// root to re-fetch itself on that page's SSE `changed` events.
+    live: Option<String>,
+}
+
+/// The whole page: the library's skeleton, with the template's head markup
+/// and its body inside the htmx root.
+async fn draw_page<P: Host>(
+    wiki: &Wiki<P>,
+    request: &Parts,
+    page: Page<'_>,
+    content: &Content<'_, P>,
+) -> String {
+    let base = &wiki.inner.base;
+    let template = &wiki.inner.template;
+    let mut head = HeadCtx::new(&page.kind, request, base, page.title);
+    let host_head = template.head(&mut head).await;
+    let body = BodyCtx::new(&page.kind, request, base, page.crumbs);
+    let root = template.body(&body, content).await;
+    let live = page.live.as_deref();
+    let sse = live.map(|_| "sse");
+    let events = live.map(|url| format!("{base}/_wiki/events{url}"));
+    let refetch = live.map(|url| format!("{base}{url}"));
+    let trigger = live.map(|_| "sse:changed");
+    let select = live.map(|_| "#htmx-root");
+    let swap = live.map(|_| "outerHTML");
+    // Keeps the root's hx attributes off its descendants, so a host element
+    // making its own htmx request isn't given `hx-select="#htmx-root"`.
+    let disinherit = live.map(|_| "*");
+    let mermaid = format!(
+        "
+import mermaid from '{MERMAID_JS}';
+const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+mermaid.initialize({{ startOnLoad: true, theme: dark ? 'dark' : 'default' }});
+document.addEventListener('htmx:afterSwap', (e) => {{
+  if (e.detail.target?.id === 'htmx-root') {{ hljs.highlightAll(); mermaid.run(); }}
+}});
+"
+    );
+    html! {
+        (DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { (head.title()) }
+                link rel="stylesheet" href=(HLJS_CSS) media="(prefers-color-scheme: light)";
+                link rel="stylesheet" href=(HLJS_DARK_CSS) media="(prefers-color-scheme: dark)";
+                @if !head.default_styles_suppressed() {
+                    style { (PreEscaped(STYLE)) }
+                }
+                @if let Some(css) = &wiki.inner.stylesheet {
+                    style { (PreEscaped(css)) }
+                }
+                script src=(HTMX_JS) {}
+                script src=(HTMX_SSE_JS) {}
+                (host_head)
+            }
+            body hx-ext=[sse] sse-connect=[events] {
+                div #htmx-root hx-get=[refetch] hx-trigger=[trigger] hx-select=[select]
+                    hx-swap=[swap] hx-disinherit=[disinherit] {
+                    (root)
+                }
+                script src=(HLJS_JS) {}
+                script { "hljs.highlightAll();" }
+                script type="module" { (PreEscaped(mermaid)) }
+                script { (PreEscaped(LINE_JS)) }
+            }
+        }
+    }
+    .into_string()
+}
+
+async fn root_index<P: Host>(State(wiki): State<Wiki<P>>, request: Parts) -> Result {
+    folder_page(&wiki, &request, "").await
+}
+
+async fn path_page<P: Host>(State(wiki): State<Wiki<P>>, request: Parts) -> Result {
+    let base = &wiki.inner.base;
+    let Some(rest) = request.uri.path().strip_prefix(&format!("{base}/")) else {
+        return Ok(not_found(&wiki, &request).await);
+    };
+    if rest == "_wiki" || rest.starts_with("_wiki/") {
+        return Ok(not_found(&wiki, &request).await);
+    }
+    if let Some(folder) = rest.strip_suffix('/') {
+        let Some(folder) = url_to_path(folder) else {
+            return Ok(not_found(&wiki, &request).await);
+        };
+        return folder_page(&wiki, &request, &folder).await;
+    }
+    let Some(rel) = url_to_rel(rest) else {
+        return Ok(not_found(&wiki, &request).await);
+    };
+    let path = rel.strip_suffix(".md").unwrap_or(&rel);
+    // A last segment with an image extension is only ever an image request.
+    if let Some(content_type) = image_type_of(path) {
+        return Ok(image(&wiki, &request, path, content_type).await);
+    }
+    // Existence comes from the disk, not the index, so pages are served while
+    // the index is still filling.
+    let root = &wiki.inner.root;
+    if is_kind(root, &rel, FsKind::File).await {
+        return page_view(&wiki, &request, &rel).await;
+    }
+    // A page asked for by its file name goes to its URL, as a `.md` link to
+    // it would; the browser keeps the `#fragment`.
+    if path.ends_with(".md") && is_kind(root, path, FsKind::File).await {
+        let to = local_href(base, path, "", false);
+        return Ok(Redirect::temporary(&to).into_response());
+    }
+    if is_kind(root, path, FsKind::Dir).await {
+        return Ok(Redirect::permanent(&format!("{base}/{rest}/")).into_response());
+    }
+    Ok(not_found(&wiki, &request).await)
+}
+
+/// The image file at `rel`, sent whole, if it is a file reached without
+/// symlinks; otherwise 404.
+async fn image<P: Host>(
+    wiki: &Wiki<P>,
+    request: &Parts,
+    rel: &str,
+    content_type: &'static str,
+) -> Response {
+    let root = &wiki.inner.root;
+    if !is_kind(root, rel, FsKind::File).await {
+        return not_found(wiki, request).await;
+    }
+    match tokio::fs::read(root.join(rel)).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, content_type)], bytes).into_response(),
+        Err(_) => not_found(wiki, request).await,
+    }
+}
+
+/// True when `root/rel` is of `kind`, checked without following symlinks
+/// (any error counts as no).
+async fn is_kind(root: &std::path::Path, rel: &str, kind: FsKind) -> bool {
+    matches!(fs_kind(root, rel).await, Ok(k) if k == kind)
+}
+
+/// Draws the page at `rel`, which the caller has checked is a file reached
+/// without symlinks. Its wikilinks are resolved first, so the content is a
+/// synchronous draw of the one parse.
+async fn page_view<P: Host>(wiki: &Wiki<P>, request: &Parts, rel: &str) -> Result {
+    let base = &wiki.inner.base;
+    let Ok(source) = tokio::fs::read_to_string(wiki.inner.root.join(rel)).await else {
+        return Ok(not_found(wiki, request).await);
+    };
+    let doc = parse(&*wiki.inner.host, &source);
+    let ex = doc.extract();
+    let (folder, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+    let mut wikilinks = Vec::with_capacity(ex.wikilinks.len());
+    for raw in &ex.wikilinks {
+        wikilinks.push(resolve_href(wiki, raw).await?);
+    }
+    let tags = wiki.inner.index.page_tags(rel).await?;
+    let title = ex.title(name.strip_suffix(".md").unwrap_or(name));
+    let url = path_to_url(rel);
+    let Document {
+        frontmatter,
+        tree,
+        body,
+    } = doc;
+    let cx = DrawCx {
+        base: base.clone(),
+        folder: folder.to_string(),
+        wikilinks,
+        ordinals: ex.ordinals,
+        headings: ex.headings,
+        lines: true,
+    };
+    let meta = DocumentMeta::new(
+        title.clone(),
+        rel.to_string(),
+        url.clone(),
+        frontmatter,
+        tags,
+    );
+    let page = Page {
+        kind: PageKind::Document(meta),
+        title,
+        crumbs: Some(folder),
+        live: Some(url),
+    };
+    let content = |_: &BodyCtx<'_, P>| draw_blocks(&tree, &body, &cx);
+    Ok(Html(draw_page(wiki, request, page, &content).await).into_response())
+}
+
+/// `GET {base}/_wiki/events/{page url path}`: an SSE stream sending
+/// `event: changed` with `data: {rel}` each time the watcher reindexes or
+/// removes that page (also when this subscriber has lagged and may have
+/// missed one). The page need not exist. The stream ends when the client
+/// disconnects, or once every clone of the `Wiki` (including every router
+/// built from it) has been dropped and the watcher with it. A served
+/// connection holds a router clone for as long as it is open, so an open
+/// stream is never ended from the server side: a host's graceful shutdown
+/// does not complete on its own while a client stays connected.
+async fn page_events<P: Host>(State(wiki): State<Wiki<P>>, request: Parts) -> Response {
+    let prefix = format!("{}/_wiki/events/", wiki.inner.base);
+    let Some(rel) = request
+        .uri
+        .path()
+        .strip_prefix(&prefix)
+        .and_then(url_to_rel)
+    else {
+        return not_found(&wiki, &request).await;
+    };
+    let rel: std::sync::Arc<str> = rel.into();
+    let stream = BroadcastStream::new(wiki.inner.changed.subscribe()).filter_map(move |msg| {
+        // A lagged receiver may have missed this page, so it is told anyway.
+        let hit = msg.map_or(true, |changed| changed == rel);
+        hit.then(|| Ok::<_, Infallible>(Event::default().event("changed").data(&*rel)))
+    });
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+async fn resolve_href<P: Host>(wiki: &Wiki<P>, raw: &str) -> Result<Option<WikiHref>> {
+    let Some(target) = LinkTarget::parse(raw) else {
+        return Ok(None);
+    };
+    let base = &wiki.inner.base;
+    Ok(Some(match wiki.inner.index.resolve(&target).await? {
+        Resolution::Unique(page) => WikiHref {
+            href: format!("{base}{}{}", page.url, heading_anchor(&target)),
+            resolved: true,
+        },
+        // The fragment rides along, for the disambiguation page's links.
+        Resolution::Ambiguous(_) | Resolution::Missing => WikiHref {
+            href: link_href(base, raw.trim()),
+            resolved: false,
+        },
+    }))
+}
+
+/// `#{slug}` of the target's heading fragment, or `""` for none (or an
+/// empty slug).
+fn heading_anchor(target: &LinkTarget) -> String {
+    match target.fragment.as_deref().map(slug) {
+        Some(slug) if !slug.is_empty() => format!("#{slug}"),
+        _ => String::new(),
+    }
+}
+
+fn link_href(base: &str, target: &str) -> String {
+    format!("{base}/_wiki/link?to={}", encode_component(target))
+}
+
+async fn folder_page<P: Host>(wiki: &Wiki<P>, request: &Parts, folder: &str) -> Result {
+    let base = &wiki.inner.base;
+    // The folder exists if the disk says so; its contents come from the index.
+    if !is_kind(&wiki.inner.root, folder, FsKind::Dir).await {
+        return Ok(not_found(wiki, request).await);
+    }
+    let index = &wiki.inner.index;
+    let (folders, pages) = index.folder_listing(folder).await?;
+    let recent = index.recent(folder, RECENT).await?;
+    let cloud = index.tag_cloud(folder, CLOUD).await?;
+    let title = match folder.rsplit_once('/') {
+        Some((_, name)) => name,
+        None if folder.is_empty() => "Index",
+        None => folder,
+    };
+    let content = |_: &BodyCtx<'_, P>| {
+        html! {
+            h1 { (title) }
+            @if !recent.is_empty() {
+                h2 { "Recently edited" }
+                ul {
+                    @for (page, edited) in &recent {
+                        (page_item(base, page, html! { " " span.muted { (utc_date(*edited)) } }))
+                    }
+                }
+            }
+            @if !cloud.is_empty() {
+                h2 { "Tags" }
+                (tag_cloud(base, &cloud))
+            }
+            ul {
+                @for name in &folders {
+                    @let path = if folder.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{folder}/{name}")
+                    };
+                    li { a href={ (base) (folder_url(&path)) } { (name) "/" } }
+                }
+                @for page in &pages {
+                    (page_item(base, page, html! {}))
+                }
+            }
+        }
+    };
+    let parent = folder.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+    let page = Page {
+        kind: PageKind::FolderIndex,
+        title: title.to_string(),
+        crumbs: (!folder.is_empty()).then_some(parent),
+        live: None,
+    };
+    Ok(Html(draw_page(wiki, request, page, &content).await).into_response())
+}
+
+/// The tag cloud: each tag linked to its tag page, sized linearly by weight
+/// from 0.85rem (lightest shown) to 1.6rem (heaviest shown).
+fn tag_cloud(base: &str, tags: &[(String, usize)]) -> Markup {
+    let min = tags.iter().map(|(_, w)| *w).min().unwrap_or(0);
+    let max = tags.iter().map(|(_, w)| *w).max().unwrap_or(0);
+    html! {
+        p.tag-cloud {
+            @for (i, (tag, weight)) in tags.iter().enumerate() {
+                @let scale = if max > min {
+                    (weight - min) as f64 / (max - min) as f64
+                } else {
+                    0.0
+                };
+                @if i > 0 { " " }
+                a.tag href=(tag_href(base, tag)) title={ (weight) " pages" }
+                    style=(format!("font-size: {:.2}rem", 0.85 + 0.75 * scale)) {
+                    "#" (tag)
+                }
+            }
+        }
+    }
+}
+
+/// `YYYY-MM-DD` in UTC for `secs` since the epoch.
+fn utc_date(secs: i64) -> String {
+    // Howard Hinnant's days-to-civil.
+    let z = secs.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+async fn link_page<P: Host>(
+    State(wiki): State<Wiki<P>>,
+    Query(query): Query<HashMap<String, String>>,
+    request: Parts,
+) -> Result {
+    let base = &wiki.inner.base;
+    let Some(target) = query.get("to").and_then(|t| LinkTarget::parse(t)) else {
+        return Ok(not_found(&wiki, &request).await);
+    };
+    let index = &wiki.inner.index;
+    let matches = match index.resolve(&target).await? {
+        Resolution::Unique(page) => vec![page],
+        Resolution::Ambiguous(pages) => pages,
+        Resolution::Missing => Vec::new(),
+    };
+    let mut refs = index.references(&target.name_key).await?;
+    refs.sort_by_key(|(page, _)| page.title.to_lowercase());
+
+    let content = |_: &BodyCtx<'_, P>| {
+        html! {
+            h1 { (target.raw) }
+            @if !matches.is_empty() {
+                h2 { "Matching pages" }
+                ul {
+                    @let anchor = heading_anchor(&target);
+                    @for page in &matches {
+                        li {
+                            a href={ (base) (page.url) (anchor) } { (page.title) }
+                            (folder_note(page))
+                        }
+                    }
+                }
+            }
+            @if !refs.is_empty() {
+                h2 { "Pages that link here" }
+                ul {
+                    @for (page, ordinal) in &refs {
+                        (anchored_item(base, page, &format!("#wl-{ordinal}")))
+                    }
+                }
+            }
+        }
+    };
+    let page = Page {
+        kind: PageKind::Disambiguation,
+        title: target.raw.clone(),
+        crumbs: Some(""),
+        live: None,
+    };
+    Ok(Html(draw_page(&wiki, &request, page, &content).await).into_response())
+}
+
+async fn tag_page<P: Host>(
+    State(wiki): State<Wiki<P>>,
+    Path(tag): Path<String>,
+    request: Parts,
+) -> Result {
+    let base = &wiki.inner.base;
+    let tag = tag.to_lowercase();
+    let mut tagged = wiki.inner.index.tagged(&tag).await?;
+    tagged.sort_by_key(|(page, _)| page.title.to_lowercase());
+    let title = format!("#{tag}");
+    let content = |_: &BodyCtx<'_, P>| {
+        html! {
+            h1 { (title) }
+            ul {
+                @for (page, ordinal) in &tagged {
+                    @let anchor = ordinal.map(|n| format!("#tag-{n}")).unwrap_or_default();
+                    (anchored_item(base, page, &anchor))
+                }
+            }
+        }
+    };
+    let page = Page {
+        kind: PageKind::Tag,
+        title: title.clone(),
+        crumbs: Some(""),
+        live: None,
+    };
+    Ok(Html(draw_page(&wiki, &request, page, &content).await).into_response())
+}
+
+async fn search_page<P: Host>(
+    State(wiki): State<Wiki<P>>,
+    Query(query): Query<HashMap<String, String>>,
+    request: Parts,
+) -> Result {
+    let base = &wiki.inner.base;
+    let q = query.get("q").map(String::as_str).unwrap_or("");
+    let title = format!("Search: {q}");
+    let results = if search_terms(q).is_empty() {
+        None
+    } else {
+        Some(wiki.inner.index.search(q).await?)
+    };
+    let content = |_: &BodyCtx<'_, P>| {
+        html! {
+            h1 { (title) }
+            @match &results {
+                Some(results) if results.is_empty() => p { "No results" },
+                Some(results) => ul {
+                    @for page in results {
+                        (page_item(base, page, folder_note(page)))
+                    }
+                },
+                None => {},
+            }
+        }
+    };
+    let page = Page {
+        kind: PageKind::Search {
+            query: q.to_string(),
+        },
+        title: title.clone(),
+        crumbs: Some(""),
+        live: None,
+    };
+    Ok(Html(draw_page(&wiki, &request, page, &content).await).into_response())
+}
+
+/// The page's folder in muted text, or nothing at the root.
+fn folder_note(page: &PageRef) -> Markup {
+    html! {
+        @if !page.folder.is_empty() {
+            " " span.muted { (page.folder) }
+        }
+    }
+}
+
+fn page_item(base: &str, page: &PageRef, suffix: Markup) -> Markup {
+    html! {
+        li { a href={ (base) (page.url) } { (page.title) } (suffix) }
+    }
+}
+
+fn anchored_item(base: &str, page: &PageRef, anchor: &str) -> Markup {
+    html! {
+        li { a href={ (base) (page.url) (anchor) } { (page.title) } }
+    }
+}
+
+async fn not_found<P: Host>(wiki: &Wiki<P>, request: &Parts) -> Response {
+    let page = Page {
+        kind: PageKind::NotFound,
+        title: "Not found".to_string(),
+        crumbs: Some(""),
+        live: None,
+    };
+    let content = |_: &BodyCtx<'_, P>| html! { h1 { "Not found" } };
+    let html = draw_page(wiki, request, page, &content).await;
+    (StatusCode::NOT_FOUND, Html(html)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::utc_date;
+
+    #[test]
+    fn utc_dates() {
+        assert_eq!(utc_date(0), "1970-01-01");
+        assert_eq!(utc_date(951_782_400), "2000-02-29");
+        assert_eq!(utc_date(1_791_225_600), "2026-10-05");
+        assert_eq!(utc_date(1_791_158_399), "2026-10-04");
+    }
+}

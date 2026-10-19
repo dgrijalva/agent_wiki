@@ -1,0 +1,30 @@
+[package]
+name = "agent_wiki"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+entities = "1"
+indextree = "4"
+maud = "0.27"
+notify = "8.2"
+notify-debouncer-mini = "0.7"
+percent-encoding = "2"
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_norway = "0.9"
+libsql = { version = "0.9.30", default-features = false, features = ["core"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+nom = "8"
+
+[dev-dependencies]
+http-body-util = "0.1"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+
+[workspace]
+members = ["tools/pending"]
