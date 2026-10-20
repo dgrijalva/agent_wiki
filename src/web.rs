@@ -90,7 +90,13 @@ details table { margin-top: 0.75rem; }
   letter-spacing: 0.06em; color: var(--muted); border: none; margin: 1.5rem 0 0.5rem; }
 .recent ul { list-style: none; padding: 0.5rem 1rem; background: var(--surface);
   border: 1px solid var(--border); border-radius: 0.5rem; }
-.recent li { margin: 0.15rem 0; }
+.recent li { display: flex; align-items: baseline; gap: 0.6rem; margin: 0;
+  font-size: 0.9rem; line-height: 1.9; }
+.recent li a { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.recent .file { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-family: var(--mono); font-size: 0.8rem; color: var(--faint); }
+.recent time { flex: none; font-size: 0.8rem; color: var(--faint); }
 .listing { list-style: none; padding: 0; }
 .listing > li { margin: 0; padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
 .listing > li:last-child { border-bottom: none; }
@@ -452,8 +458,12 @@ async fn folder_page<P: Host>(wiki: &Wiki<P>, request: &Parts, folder: &str) -> 
                     section.recent {
                         h2 { "Recently edited" }
                         ul {
-                            @for (page, _) in &recent {
-                                li { a href={ (base) (page.url) } { (page.title) } }
+                            @for (page, edited) in &recent {
+                                li {
+                                    a href={ (base) (page.url) } { (page.title) }
+                                    span.file { (relative_path(folder, &page.path)) }
+                                    time { (utc_date(*edited)) }
+                                }
                             }
                         }
                     }
@@ -521,6 +531,16 @@ fn listing_entry(base: &str, page: &PageRef, details: Option<&PageDetails>) -> M
             }
         }
     }
+}
+
+/// `path` relative to `folder` (`""` is the root), which holds it.
+fn relative_path<'a>(folder: &str, path: &'a str) -> &'a str {
+    if folder.is_empty() {
+        return path;
+    }
+    path.strip_prefix(folder)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .unwrap_or(path)
 }
 
 /// Each tag linked to its tag page, with its page count when above one.

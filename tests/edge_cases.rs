@@ -371,23 +371,20 @@ fn today() -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-/// `(page url, date)` for each "Recently edited" entry on `/`, in order,
-/// with the date the listing shows for it.
+/// `(page url, date)` for each "Recently edited" entry on `/`, in order.
 async fn recently_edited(app: &Router) -> Vec<(String, String)> {
     let body = ok_body(app, "/").await;
     let heading = "<h2>Recently edited</h2>";
     let start = body.find(heading).expect("recently edited") + heading.len();
     let section = &body[start..];
     let section = &section[..section.find("</ul>").unwrap()];
-    let listing = &body[body.find("<h2>Contents</h2>").expect("contents")..];
     section
         .split("<li>")
         .skip(1)
         .map(|item| {
             let href = item.split("href=\"").nth(1).unwrap();
             let href = &href[..href.find('"').unwrap()];
-            let entry = listing.split(&format!("href=\"{href}\"")).nth(1).unwrap();
-            let date = entry.split("<time>").nth(1).unwrap();
+            let date = item.split("<time>").nth(1).unwrap();
             let date = &date[..date.find('<').unwrap()];
             (href.to_string(), date.to_string())
         })

@@ -190,8 +190,11 @@ async fn folder_indexes_show_recent_and_tags() {
     assert!(recent_at < contents_at && contents_at < tags_at, "{body}");
     let recent = section(&body, "<h2>Recently edited</h2>");
     assert_eq!(recent.matches("<li>").count(), 10);
-    // Just links: no dates.
-    assert!(!recent.contains("<time>"), "{recent}");
+    // Each row has its path from the folder and its edit date.
+    assert!(
+        recent.contains("<span class=\"file\">Notes/Weather Tagged.md</span><time>"),
+        "{recent}"
+    );
 
     let tags = section(&body, "<h2>Tags</h2>");
     assert!(
@@ -211,6 +214,11 @@ async fn folder_indexes_show_recent_and_tags() {
     for href in hrefs {
         assert!(href.starts_with("/Projects/"), "{recent}");
     }
+    // Paths are relative to the folder shown.
+    assert!(
+        recent.contains("<span class=\"file\">Beta/Deep/Nested Note.md</span>"),
+        "{recent}"
+    );
 
     // `Projects/Beta/Deep` holds one untagged page, so its tag cloud is
     // empty and omitted (#84).

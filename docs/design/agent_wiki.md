@@ -391,7 +391,8 @@ Folder index pages, for now. "This will probably evolve." (Dave, 2026-10-19)
 > **Dave (2026-10-20):** "i'm fine with recently edited then the main listing, though they should be presented differently and clearly separated."
 
 - **Order: recently edited, then the main listing, then tags.** (Dave, 2026-10-20)
-- **Recently edited is just simple links.** (Dave, 2026-10-20)
+- **Recently edited: one tight line per page, with disambiguation data:** the title, then the relative path and filename, then the edit date. "it's also hard distinguish between similarly named files in different folders. and it kind of dominates the space." (Dave, 2026-10-20)
+  [PROVISIONAL: the path is relative to the folder being shown; the date is `YYYY-MM-DD`, at the right of the line.]
 - **The main listing has a header**, and is clearly separated from recently edited. (Dave, 2026-10-20)
   [PROVISIONAL: the header reads "Contents"; subfolders come first, as plain links, then the pages.]
 - **The main listing shows expanded content for each page:** title, file name, description/summary/first body text, edit date, tags. (Dave, 2026-10-20) The file name because "when the title or first heading is not the same as the filename, it can be confusing."
