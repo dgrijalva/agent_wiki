@@ -44,6 +44,19 @@ pub(crate) struct Extracted {
     pub(crate) ordinals: HashMap<NodeId, usize>,
     /// Each heading's id: its text's [`slug`], unique on the page.
     pub(crate) headings: HashMap<NodeId, String>,
+    /// Every heading, in document order.
+    pub(crate) outline: Vec<OutlineHeading>,
+}
+
+/// A heading as the outline lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutlineHeading {
+    pub(crate) level: u8,
+    pub(crate) text: String,
+    /// The heading's id on the page, as in [`Extracted::headings`].
+    pub(crate) anchor: String,
+    /// The line it starts on; `None` for a heading a host built.
+    pub(crate) line: Option<usize>,
 }
 
 impl Extracted {
@@ -146,11 +159,17 @@ impl<P: Host> Walk<'_, P> {
     fn node(&mut self, id: NodeId, mut under: Under) -> Under {
         match self.tree.arena[id].get() {
             Node::Block(kind) => match kind {
-                BlockKind::Heading { .. } => {
+                BlockKind::Heading { level } => {
                     let mut text = String::new();
                     plain_text(self.tree, id, &mut text);
                     let slug = self.unique(slug(&text));
-                    self.ex.headings.insert(id, slug);
+                    self.ex.headings.insert(id, slug.clone());
+                    self.ex.outline.push(OutlineHeading {
+                        level: *level,
+                        text: text.clone(),
+                        anchor: slug,
+                        line: self.tree.lines.get(&id).copied(),
+                    });
                     self.ex.first_heading.get_or_insert(text);
                 }
                 BlockKind::Paragraph if self.ex.first_paragraph.is_none() => {

@@ -754,6 +754,49 @@ impl<P: Host> Index<P> {
         tags.dedup();
         Ok(tags)
     }
+
+    /// What the folder listing shows of each page in `paths` that is
+    /// indexed, keyed by path, with each page's tags deduped and sorted.
+    pub async fn details(&self, paths: &[String]) -> Result<HashMap<String, PageDetails>> {
+        if paths.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders = vec!["?"; paths.len()].join(", ");
+        let conn = self.conn.lock().await;
+        let rows = conn
+            .query(
+                &format!("SELECT path, summary, edited FROM page WHERE path IN ({placeholders})"),
+                paths.to_vec(),
+            )
+            .await?;
+        let mut details: HashMap<String, PageDetails> = collect(rows, |row| {
+            let details = PageDetails {
+                summary: row.get(1)?,
+                edited: row.get(2)?,
+                tags: Vec::new(),
+            };
+            Ok((row.get(0)?, details))
+        })
+        .await?
+        .into_iter()
+        .collect();
+        let rows = conn
+            .query(
+                &format!("SELECT source, tag FROM tag WHERE source IN ({placeholders})"),
+                paths.to_vec(),
+            )
+            .await?;
+        for (path, tag) in collect(rows, |row| Ok((row.get::<String>(0)?, row.get(1)?))).await? {
+            if let Some(page) = details.get_mut(&path) {
+                page.tags.push(tag);
+            }
+        }
+        for page in details.values_mut() {
+            page.tags.sort();
+            page.tags.dedup();
+        }
+        Ok(details)
+    }
 }
 
 /// Fails with `not an agent_wiki index` if the database has another

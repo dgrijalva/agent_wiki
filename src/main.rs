@@ -33,6 +33,7 @@ async fn main() -> anyhow::Result<()> {
         args.folder.display(),
         args.port
     );
+    println!("MCP at http://127.0.0.1:{}/_wiki/mcp", args.port);
     axum::serve(listener, wiki.router())
         .with_graceful_shutdown(shutdown())
         .await?;

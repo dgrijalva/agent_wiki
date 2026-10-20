@@ -151,6 +151,10 @@ pub fn router<P: Host, S: Clone + Send + Sync + 'static>(wiki: Wiki<P>) -> Route
             &format!("{base}/_wiki/events/{{*path}}"),
             get(page_events::<P>),
         )
+        .route_service(
+            &format!("{base}/_wiki/mcp"),
+            crate::mcp::service(wiki.clone()),
+        )
         .route(&format!("{base}/{{*path}}"), get(path_page::<P>));
     if !base.is_empty() {
         let to = format!("{base}/");
