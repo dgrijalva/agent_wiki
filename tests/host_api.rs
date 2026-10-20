@@ -203,7 +203,11 @@ async fn a_custom_body_places_the_chrome_inside_the_htmx_root() {
     assert!(!body.contains("<header>"), "{body}");
     assert!(!body.contains("<main>"), "{body}");
     // Live-update wiring is still the library's.
-    assert!(body.contains("<body hx-ext=\"sse\" sse-connect=\"/_wiki/events/sub/Deep\">"));
+    // The stream carries the page's tab id, which differs per page load.
+    assert!(
+        body.contains("<body hx-ext=\"sse\" sse-connect=\"/_wiki/events/sub/Deep?tab="),
+        "{body}"
+    );
     assert!(body[root..].starts_with(
         "<div id=\"htmx-root\" hx-get=\"/sub/Deep\" hx-trigger=\"sse:changed\" \
          hx-select=\"#htmx-root\" hx-swap=\"outerHTML\" hx-disinherit=\"*\">"

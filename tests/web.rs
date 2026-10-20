@@ -350,7 +350,8 @@ async fn hosted_under_docs() {
     assert!(body.contains("<a href=\"/docs/Notes/Body%20Only\">Body Only</a>"));
 
     let body = ok_body(&app, "/docs/Home").await;
-    assert!(body.contains("sse-connect=\"/docs/_wiki/events/Home\""));
+    assert!(body.contains("sse-connect=\"/docs/_wiki/events/Home?tab="));
+    assert!(body.contains("data-base=\"/docs\""));
     assert!(body.contains("hx-get=\"/docs/Home\""));
 }
 
@@ -517,7 +518,7 @@ async fn page_views_are_wired_for_live_updates() {
     for needle in [
         "htmx.org@2.0.11/dist/htmx.min.js",
         "htmx-ext-sse@2.2.4/dist/sse.min.js",
-        "<body hx-ext=\"sse\" sse-connect=\"/_wiki/events/Home\">",
+        "<body hx-ext=\"sse\" sse-connect=\"/_wiki/events/Home?tab=",
         "hx-get=\"/Home\"",
         "hx-trigger=\"sse:changed\"",
         "hx-select=\"#htmx-root\"",
@@ -548,7 +549,7 @@ async fn page_views_are_wired_for_live_updates() {
     }
 
     let body = ok_body(&app, "/Projects/Beta/Deep/Nested%20Note").await;
-    assert!(body.contains("sse-connect=\"/_wiki/events/Projects/Beta/Deep/Nested%20Note\""));
+    assert!(body.contains("sse-connect=\"/_wiki/events/Projects/Beta/Deep/Nested%20Note?tab="));
 
     for uri in ["/", "/_wiki/search?q=x"] {
         let body = ok_body(&app, uri).await;

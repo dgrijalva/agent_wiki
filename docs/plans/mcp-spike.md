@@ -69,7 +69,18 @@ Out, but part of the feature (design → Round-tripping): the client state push,
 - The server handler is a small struct holding `Wiki<P>` and `ToolRouter<Self>` from `wiki.tools()`.
 - The binary prints the MCP URL next to the site URL at startup.
 
-### 6. Tests
+### 6. Browser side
+
+Design → Round-tripping: the state push, the open-files tool, the copy button. Local only.
+
+- [PROVISIONAL: **tab identity.** The server gives each document page load a tab id and puts it in the live-update stream's URL (`…/_wiki/events/{page}?tab={id}`) and on `<body data-tab>`. A page counts as open while that stream is connected; when it drops (tab closed, navigated away), the file is no longer open. Ids are `{process start ms}-{counter}`, so a page reconnecting after a restart keeps a distinct id.]
+- [PROVISIONAL: **state push.** `POST {base}/_wiki/state` with `{tab, focused, selection: {start, end} | null}`, sent when the stream connects (`htmx:sseOpen`), on `focus`/`blur`/`visibilitychange`, and on `selectionchange` (debounced 250 ms); unchanged state isn't resent. A push for a tab whose stream isn't connected is ignored. `focused` is `document.hasFocus()`.]
+- [PROVISIONAL: **selection lines.** `start` is the `data-line` of the block the selection starts in; `end` is one before the first block after the block it ends in, or `null` when it ends in the last block (to end of file). Only selections inside the htmx root's numbered blocks count. No selected text is sent.]
+- [PROVISIONAL: **recency.** A tab becomes most recently active when it connects, gains focus, or changes to a non-empty selection.]
+- [PROVISIONAL: **`open_files` tool**, in the default collection, no arguments. One line per file, most recent first, deduped by file (the most recent tab's state wins): `path  (focused)  selected L12-L18`, `L40-end` for a selection to the end; "No documents open." when none.]
+- [PROVISIONAL: **copy button.** `BodyCtx::copy_path()`, a `button.copy-path` copying the document's root-relative path; the default template puts it at the right of the breadcrumbs. A shared click handler in the page skeleton shows "Copied" for a moment.]
+
+### 7. Tests
 
 - Each tool called directly against a temp folder: search with and without a folder; overview's outline nesting, lines, anchors, references, and missing file.
 - One HTTP test through the router: initialize, `tools/list`, `tools/call search`.

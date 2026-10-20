@@ -71,6 +71,7 @@ impl<P: Host> Wiki<P> {
         ToolRouter::new()
             .with_route(route(Search::new(self.clone())))
             .with_route(route(Overview::new(self.clone())))
+            .with_route(route(OpenFiles::new(self.clone())))
     }
 }
 
@@ -111,7 +112,8 @@ impl<P: Host> ServerHandler for Server<P> {
 
 const INSTRUCTIONS: &str = "A wiki of markdown files. Paths in results are relative to the \
 wiki root. Use `search` to find documents, and `overview` to see a document's outline (with \
-line numbers) before reading the part you need.";
+line numbers) before reading the part you need. Use `open_files` to see what the user has \
+open in the wiki's web view, and what they have selected.";
 
 /// The HTTP endpoint for the default tools, with no sessions.
 pub(crate) fn service<P: Host>(
@@ -288,6 +290,52 @@ section you need.";
         if !references.is_empty() {
             writeln!(out, "references:")?;
             out.push_str(&references);
+        }
+        Ok(out)
+    }
+}
+
+/// The documents open in the web view, most recently active first: the
+/// tool that lets an agent see what the user is looking at.
+pub struct OpenFiles<P: Host> {
+    wiki: Wiki<P>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct OpenFilesArgs {}
+
+impl<P: Host> OpenFiles<P> {
+    pub fn new(wiki: Wiki<P>) -> Self {
+        OpenFiles { wiki }
+    }
+}
+
+impl<P: Host> Tool for OpenFiles<P> {
+    type Args = OpenFilesArgs;
+    const NAME: &'static str = "open_files";
+    const DESCRIPTION: &'static str = "The documents the user has open in the wiki's web view, \
+most recently focused or selected in first. Marks the one whose window has focus, and gives \
+the selection as a source line range, e.g. `selected L12-L18` (`L40-end` runs to the end of \
+the file).";
+
+    async fn call(&self, _: OpenFilesArgs) -> Result<String> {
+        let files = self.wiki.inner.tabs.open_files();
+        if files.is_empty() {
+            return Ok("No documents open.".to_string());
+        }
+        let mut out = String::new();
+        for file in files {
+            write!(out, "{}", file.rel)?;
+            if file.focused {
+                write!(out, "  (focused)")?;
+            }
+            if let Some(sel) = file.selection {
+                match sel.end {
+                    Some(end) => write!(out, "  selected L{}-L{end}", sel.start)?,
+                    None => write!(out, "  selected L{}-end", sel.start)?,
+                }
+            }
+            out.push('\n');
         }
         Ok(out)
     }

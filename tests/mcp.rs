@@ -3,7 +3,9 @@
 use std::fs;
 use std::path::Path;
 
-use agent_wiki::{Overview, OverviewArgs, Search, SearchArgs, Tool, Wiki};
+use agent_wiki::{
+    OpenFiles, OpenFilesArgs, Overview, OverviewArgs, Search, SearchArgs, Tool, Wiki,
+};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -183,7 +185,7 @@ async fn over_http() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["overview", "search"]);
+    assert_eq!(names, ["open_files", "overview", "search"]);
 
     let call = rpc(
         &app,
@@ -210,4 +212,95 @@ async fn over_http() {
         error["result"]["content"][0]["text"],
         "no document at nope.md"
     );
+}
+
+async fn push(app: &axum::Router, state: Value) {
+    let request = Request::post("/_wiki/state")
+        .header("content-type", "application/json")
+        .body(Body::from(state.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+/// Opens a page's live-update stream as tab `tab`; the page is open while
+/// the returned response (and its body) is kept.
+async fn connect(app: &axum::Router, url: &str, tab: &str) -> axum::response::Response {
+    let request = Request::get(format!("/_wiki/events{url}?tab={tab}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response
+}
+
+#[tokio::test]
+async fn open_files_follow_the_pages_streams_and_pushed_state() {
+    let dir = folder();
+    let wiki = open(&dir).await;
+    let app = wiki.router::<()>();
+    let tool = OpenFiles::new(wiki);
+    let open_files = || tool.call(OpenFilesArgs {});
+
+    assert_eq!(open_files().await.unwrap(), "No documents open.");
+
+    let alpha = connect(&app, "/projects/alpha", "1-1").await;
+    let beta = connect(&app, "/projects/beta", "1-2").await;
+    assert_eq!(
+        open_files().await.unwrap(),
+        "projects/beta.md\nprojects/alpha.md\n"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    push(
+        &app,
+        json!({"tab": "1-1", "focused": true, "selection": {"start": 10, "end": 13}}),
+    )
+    .await;
+    assert_eq!(
+        open_files().await.unwrap(),
+        "projects/alpha.md  (focused)  selected L10-L13\nprojects/beta.md\n"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    push(
+        &app,
+        json!({"tab": "1-2", "focused": false, "selection": {"start": 3, "end": null}}),
+    )
+    .await;
+    assert_eq!(
+        open_files().await.unwrap(),
+        "projects/beta.md  selected L3-end\nprojects/alpha.md  (focused)  selected L10-L13\n"
+    );
+
+    // Closing a page's stream closes it.
+    drop(beta);
+    assert_eq!(
+        open_files().await.unwrap(),
+        "projects/alpha.md  (focused)  selected L10-L13\n"
+    );
+    drop(alpha);
+    assert_eq!(open_files().await.unwrap(), "No documents open.");
+}
+
+#[tokio::test]
+async fn a_document_page_carries_its_tab_and_copy_button() {
+    let dir = folder();
+    let app = open(&dir).await.router::<()>();
+    let request = Request::get("/projects/alpha").body(Body::empty()).unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(
+        body.contains("sse-connect=\"/_wiki/events/projects/alpha?tab="),
+        "{body}"
+    );
+    assert!(body.contains("data-base=\"\""), "{body}");
+    assert!(
+        body.contains(
+            "<button class=\"copy-path\" type=\"button\" data-path=\"projects/alpha.md\""
+        ),
+        "{body}"
+    );
+    assert!(body.contains("/_wiki/state"), "{body}");
 }

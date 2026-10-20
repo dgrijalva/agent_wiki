@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 
+use axum::Json;
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
@@ -21,6 +22,7 @@ use crate::names::{
     LinkTarget, encode_component, folder_url, image_type_of, path_to_url, url_to_path, url_to_rel,
 };
 use crate::parse::{Host, parse};
+use crate::tabs::PushedState;
 use crate::template::{BodyCtx, DocumentMeta, HeadCtx, PageKind, Template};
 
 const HLJS_CSS: &str =
@@ -85,6 +87,11 @@ th { background: var(--surface); }
 details summary { cursor: pointer; color: var(--muted); }
 details table { margin-top: 0.75rem; }
 .line-target { background: var(--line-target); }
+.crumbs-row { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+button.copy-path { flex: none; font: inherit; font-size: 0.8rem; color: var(--muted);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 0.4rem;
+  padding: 0.1rem 0.6rem; cursor: pointer; }
+button.copy-path:hover { color: var(--fg); }
 .index h2 { margin-top: 2.5rem; }
 .recent h2, .top-tags h2 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase;
   letter-spacing: 0.06em; color: var(--muted); border: none; margin: 1.5rem 0 0.5rem; }
@@ -111,6 +118,73 @@ details table { margin-top: 0.75rem; }
 .listing .tags a, .top-tags a { margin-right: 0.6rem; }
 .top-tags p { margin: 0; }
 .top-tags .count { color: var(--faint); }
+";
+
+/// A `button.copy-path` (see `BodyCtx::copy_path`) copies its `data-path`
+/// to the clipboard and says so for a moment.
+const COPY_JS: &str = "
+document.addEventListener('click', async (e) => {
+  const button = e.target.closest('button.copy-path');
+  if (!button) return;
+  const label = button.textContent;
+  try {
+    await navigator.clipboard.writeText(button.dataset.path);
+    button.textContent = 'Copied';
+  } catch {
+    button.textContent = 'Copy failed';
+  }
+  setTimeout(() => { button.textContent = label; }, 1200);
+});
+";
+
+/// A document page pushes its state to `{base}/_wiki/state`: when its
+/// live-update stream connects, and when focus or the selection changes.
+/// The selection is by source line: the line of the block it starts in,
+/// through the line before the first block after the one it ends in (`null`
+/// when that is the last block). Only a selection inside the htmx root's
+/// line-numbered blocks counts.
+const STATE_JS: &str = "
+(() => {
+  const tab = document.body.dataset.tab;
+  const url = document.body.dataset.base + '/_wiki/state';
+  const root = () => document.getElementById('htmx-root');
+  const block = (node) => {
+    const el = (node.nodeType === 1 ? node : node.parentElement)?.closest('[data-line]');
+    return el && root()?.contains(el) ? el : null;
+  };
+  const selection = () => {
+    const sel = document.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    const first = block(range.startContainer);
+    const last = block(range.endContainer);
+    if (!first || !last) return null;
+    const start = Number(first.dataset.line);
+    const lastLine = Number(last.dataset.line);
+    let end = null;
+    for (const el of root().querySelectorAll('[data-line]')) {
+      const n = Number(el.dataset.line);
+      if (n > lastLine) { end = n - 1; break; }
+    }
+    return { start, end };
+  };
+  let sent = null;
+  const push = () => {
+    const state = { tab, focused: document.hasFocus(), selection: selection() };
+    const body = JSON.stringify(state);
+    if (body === sent) return;
+    sent = body;
+    fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body,
+      keepalive: true }).catch(() => {});
+  };
+  let timer;
+  const soon = () => { clearTimeout(timer); timer = setTimeout(push, 250); };
+  document.addEventListener('htmx:sseOpen', () => { sent = null; push(); });
+  addEventListener('focus', push);
+  addEventListener('blur', push);
+  document.addEventListener('visibilitychange', push);
+  document.addEventListener('selectionchange', soon);
+})();
 ";
 
 /// Line links, `#:N`: the last block in the htmx root whose `data-line` is
@@ -151,6 +225,7 @@ pub fn router<P: Host, S: Clone + Send + Sync + 'static>(wiki: Wiki<P>) -> Route
             &format!("{base}/_wiki/events/{{*path}}"),
             get(page_events::<P>),
         )
+        .route(&format!("{base}/_wiki/state"), post(push_state::<P>))
         .route_service(
             &format!("{base}/_wiki/mcp"),
             crate::mcp::service(wiki.clone()),
@@ -208,8 +283,11 @@ async fn draw_page<P: Host>(
     let body = BodyCtx::new(&page.kind, request, base, page.crumbs);
     let root = template.body(&body, content).await;
     let live = page.live.as_deref();
+    let tab = live.map(|_| wiki.inner.tabs.new_id());
     let sse = live.map(|_| "sse");
-    let events = live.map(|url| format!("{base}/_wiki/events{url}"));
+    let events = live
+        .zip(tab.as_deref())
+        .map(|(url, tab)| format!("{base}/_wiki/events{url}?tab={tab}"));
     let refetch = live.map(|url| format!("{base}{url}"));
     let trigger = live.map(|_| "sse:changed");
     let select = live.map(|_| "#htmx-root");
@@ -246,7 +324,7 @@ document.addEventListener('htmx:afterSwap', (e) => {{
                 script src=(HTMX_SSE_JS) {}
                 (host_head)
             }
-            body hx-ext=[sse] sse-connect=[events] {
+            body hx-ext=[sse] sse-connect=[events] data-tab=[tab.as_deref()] data-base=(base) {
                 div #htmx-root hx-get=[refetch] hx-trigger=[trigger] hx-select=[select]
                     hx-swap=[swap] hx-disinherit=[disinherit] {
                     (root)
@@ -255,6 +333,10 @@ document.addEventListener('htmx:afterSwap', (e) => {{
                 script { "hljs.highlightAll();" }
                 script type="module" { (PreEscaped(mermaid)) }
                 script { (PreEscaped(LINE_JS)) }
+                script { (PreEscaped(COPY_JS)) }
+                @if tab.is_some() {
+                    script { (PreEscaped(STATE_JS)) }
+                }
             }
         }
     }
@@ -386,7 +468,11 @@ async fn page_view<P: Host>(wiki: &Wiki<P>, request: &Parts, rel: &str) -> Resul
 /// connection holds a router clone for as long as it is open, so an open
 /// stream is never ended from the server side: a host's graceful shutdown
 /// does not complete on its own while a client stays connected.
-async fn page_events<P: Host>(State(wiki): State<Wiki<P>>, request: Parts) -> Response {
+async fn page_events<P: Host>(
+    State(wiki): State<Wiki<P>>,
+    Query(query): Query<EventsQuery>,
+    request: Parts,
+) -> Response {
     let prefix = format!("{}/_wiki/events/", wiki.inner.base);
     let Some(rel) = request
         .uri
@@ -397,7 +483,13 @@ async fn page_events<P: Host>(State(wiki): State<Wiki<P>>, request: Parts) -> Re
         return not_found(&wiki, &request).await;
     };
     let rel: std::sync::Arc<str> = rel.into();
+    // The page is open for as long as the stream holds the guard.
+    let guard = query
+        .tab
+        .filter(|tab| valid_tab(tab))
+        .map(|tab| wiki.inner.tabs.connect(tab, rel.clone()));
     let stream = BroadcastStream::new(wiki.inner.changed.subscribe()).filter_map(move |msg| {
+        let _open = &guard;
         // A lagged receiver may have missed this page, so it is told anyway.
         let hit = msg.map_or(true, |changed| changed == rel);
         hit.then(|| Ok::<_, Infallible>(Event::default().event("changed").data(&*rel)))
@@ -405,6 +497,30 @@ async fn page_events<P: Host>(State(wiki): State<Wiki<P>>, request: Parts) -> Re
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct EventsQuery {
+    /// The page's tab id, from `draw_page`; the page counts as open while
+    /// the stream is connected.
+    tab: Option<String>,
+}
+
+/// A tab id as `Tabs::new_id` makes them, loosely: short, digits and `-`.
+fn valid_tab(tab: &str) -> bool {
+    !tab.is_empty() && tab.len() <= 64 && tab.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+}
+
+/// `POST {base}/_wiki/state`: a document page's pushed state; see
+/// `STATE_JS`. Ignored for a tab whose stream isn't connected.
+async fn push_state<P: Host>(
+    State(wiki): State<Wiki<P>>,
+    Json(state): Json<PushedState>,
+) -> StatusCode {
+    if valid_tab(&state.tab) {
+        wiki.inner.tabs.push(state);
+    }
+    StatusCode::NO_CONTENT
 }
 
 async fn resolve_href<P: Host>(wiki: &Wiki<P>, raw: &str) -> Result<Option<WikiHref>> {

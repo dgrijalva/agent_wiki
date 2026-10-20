@@ -12,4 +12,7 @@ Plan: `docs/plans/mcp-spike.md`. Design: `docs/design/agent_wiki.md` → MCP.
 - The sketch compiled against rmcp 3.6.0 as designed: `ToolRoute::new_dyn` with a closure holding an `Arc` of the tool, generic over `S` with no bound.
 - Tests: `tests/mcp.rs` (5) pass; full suite and clippy clean.
 - Manual check with curl against the binary on `docs/`: both tools answer. A search sent right after startup returned "No matches." while the index was filling (accepted by the design).
-- Not done: the manual test from a real agent (Claude Code), and the browser side (state push, open-files tool, copy button).
+- Not done: the manual test from a real agent (Claude Code).
+- Committed the spike (`12353ab`). Dave: "commit it. then do the browser side stuff".
+- Browser side built (plan step 6): `src/tabs.rs` (the registry), tab ids on the events stream, `POST {base}/_wiki/state`, `STATE_JS` and `COPY_JS`, `BodyCtx::copy_path`, the `open_files` tool. Tests updated where they matched the exact `sse-connect` URL or default header markup.
+- Checked in headless Brave over CDP (`--user-data-dir` in the scratchpad, not Dave's profile): page registered, focus, a heading-to-paragraph selection reported as `L5-L8`, a second page listed first, the copy button copies `plans/mcp-spike.md`, closing a tab removes it. In headless every page reports `document.hasFocus()` true, so two files showed `(focused)` at once; a real browser fires `blur` on the tab left behind.

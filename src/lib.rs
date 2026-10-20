@@ -5,6 +5,7 @@ mod links;
 mod mcp;
 mod names;
 mod parse;
+mod tabs;
 mod template;
 mod tree;
 mod watch;
@@ -15,7 +16,9 @@ pub use nom;
 pub use rmcp;
 
 pub use crate::draw::{DrawChildren, DrawCtx, Element};
-pub use crate::mcp::{Overview, OverviewArgs, Search, SearchArgs, Tool, route};
+pub use crate::mcp::{
+    OpenFiles, OpenFilesArgs, Overview, OverviewArgs, Search, SearchArgs, Tool, route,
+};
 pub use crate::parse::{BlockStream, Host, InlineStream, Never, Plain};
 pub use crate::template::{BodyCtx, DefaultTemplate, DocumentMeta, HeadCtx, PageKind, Template};
 pub use crate::tree::{Align, BlockKind, Children, Content, InlineKind, Parsed};
@@ -80,6 +83,8 @@ struct Inner<P: Host> {
     /// the watcher are both gone. A served SSE connection keeps a router
     /// clone, so it is never ended from this side; see `web::page_events`.
     changed: tokio::sync::broadcast::Sender<Arc<str>>,
+    /// The document pages open in browsers, for the `open_files` tool.
+    tabs: tabs::Tabs,
 }
 
 impl Wiki {
@@ -191,6 +196,7 @@ impl<P: Host> WikiBuilder<P> {
                 _watcher: watcher,
                 indexed,
                 changed,
+                tabs: tabs::Tabs::new(),
             }),
         })
     }

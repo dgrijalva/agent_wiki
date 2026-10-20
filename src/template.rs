@@ -20,8 +20,8 @@ pub trait Template<P: Host>: Send + Sync + 'static {
 
     /// The contents of the htmx root. Must embed `content(ctx)`. A template
     /// that doesn't use the default layout places the built-in chrome itself
-    /// (`ctx.search_box()`, `ctx.breadcrumbs()`, `ctx.tags()`,
-    /// `ctx.frontmatter_table()`).
+    /// (`ctx.search_box()`, `ctx.breadcrumbs()`, `ctx.copy_path()`,
+    /// `ctx.tags()`, `ctx.frontmatter_table()`).
     fn body(
         &self,
         ctx: &BodyCtx<'_, P>,
@@ -255,6 +255,19 @@ impl<'a, P: Host> BodyCtx<'a, P> {
         }
     }
 
+    /// A button that copies the document's path from the wiki root, for
+    /// pasting to an agent; empty on other pages.
+    pub fn copy_path(&self) -> Markup {
+        let PageKind::Document(meta) = self.kind else {
+            return html! {};
+        };
+        html! {
+            button.copy-path type="button" data-path=(meta.path()) title={ "Copy " (meta.path()) } {
+                "Copy path"
+            }
+        }
+    }
+
     /// The document's frontmatter as a collapsed table; empty when there is
     /// none.
     pub fn frontmatter_table(&self) -> Markup {
@@ -319,11 +332,19 @@ impl<P: Host> Template<P> for DefaultTemplate {
         content: &(dyn Fn(&BodyCtx<'_, P>) -> Markup + Sync),
     ) -> Markup {
         let crumbs = ctx.breadcrumbs();
+        let copy = ctx.copy_path();
         let tags = ctx.tags();
         html! {
             (ctx.search_box())
-            @if !crumbs.0.is_empty() || !tags.0.is_empty() {
-                header { (crumbs) (tags) }
+            @if !crumbs.0.is_empty() || !copy.0.is_empty() || !tags.0.is_empty() {
+                header {
+                    @if copy.0.is_empty() {
+                        (crumbs)
+                    } @else {
+                        div.crumbs-row { (crumbs) (copy) }
+                    }
+                    (tags)
+                }
             }
             main {
                 (ctx.frontmatter_table())
@@ -356,8 +377,10 @@ mod tests {
             html,
             "<form role=\"search\" action=\"/b/_wiki/search\" method=\"get\">\
              <input type=\"search\" name=\"q\" placeholder=\"Search\" value=\"\"></form>\
-             <header><nav><a href=\"/b/\">Index</a> / <a href=\"/b/Projects/\">Projects</a> / \
-             <a href=\"/b/Projects/Alpha/\">Alpha</a></nav>\
+             <header><div class=\"crumbs-row\"><nav><a href=\"/b/\">Index</a> / \
+             <a href=\"/b/Projects/\">Projects</a> / <a href=\"/b/Projects/Alpha/\">Alpha</a></nav>\
+             <button class=\"copy-path\" type=\"button\" data-path=\"Projects/Alpha/T.md\" \
+             title=\"Copy Projects/Alpha/T.md\">Copy path</button></div>\
              <p class=\"tags\"><a class=\"tag\" href=\"/b/_wiki/tag/a\">#a</a> \
              <a class=\"tag\" href=\"/b/_wiki/tag/b\">#b</a></p></header>\
              <main><details><summary>Properties</summary><table>\
