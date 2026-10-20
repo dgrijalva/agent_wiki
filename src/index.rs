@@ -18,7 +18,7 @@ use crate::parse::{Host, parse};
 /// FTS5 tokenizer (`unicode61 remove_diacritics 2`), key normalisation,
 /// title rules, or what `Document::extract` collects. An index file with a
 /// different stored version (`PRAGMA user_version`) is rebuilt.
-pub const INDEX_VERSION: i64 = 2;
+pub const INDEX_VERSION: i64 = 3;
 
 /// `PRAGMA application_id` of an agent_wiki index file: ASCII `awik`. A
 /// SQLite file with another id that holds any schema object is refused.
@@ -29,10 +29,10 @@ pub const AGENT_WIKI_APP_ID: i32 = 0x6177_696B;
 /// when the page was last edited, in s (the latest commit time for a clean
 /// tracked file when the scan wrote the row, the file's `mtime` otherwise;
 /// the scan leaves a row whose `mtime` matches the file alone, so it keeps
-/// this across restarts). A `wikilink` row is one counted wikilink, keyed
-/// by its ordinal; a `tag` row is one distinct lowercase tag of a page,
-/// holding its first inline ordinal, or NULL when it is only in
-/// frontmatter. `page_fts` indexes `page`'s title and body as external
+/// this across restarts); `summary` is the page's summary, `''` for none.
+/// A `wikilink` row is one counted wikilink, keyed by its ordinal; a `tag`
+/// row is one distinct lowercase tag of a page, holding its first inline
+/// ordinal, or NULL when it is only in frontmatter. `page_fts` indexes `page`'s title and body as external
 /// content, kept current by the triggers.
 const SCHEMA: &str = "
 CREATE TABLE meta (root TEXT NOT NULL);
@@ -46,7 +46,8 @@ CREATE TABLE page (
     key_stripped TEXT NOT NULL,
     mtime INTEGER NOT NULL,
     body TEXT NOT NULL,
-    edited INTEGER NOT NULL
+    edited INTEGER NOT NULL,
+    summary TEXT NOT NULL
 );
 CREATE INDEX page_key_full ON page(key_full);
 CREATE INDEX page_key_stripped ON page(key_stripped);
@@ -104,6 +105,13 @@ const MTIMES_IN: &str = "SELECT path, mtime FROM page WHERE path >= ?1 AND path 
 /// `folder_listing`'s pages directly in folder `?1`.
 const LISTING_PAGES: &str = "SELECT path, url, folder, title FROM page WHERE folder = ?1";
 
+/// `listing_details`' pages directly in folder `?1`.
+const LISTING_DETAILS: &str = "SELECT path, summary, edited FROM page WHERE folder = ?1";
+
+/// `listing_details`' tags of pages directly in folder `?1`, sorted.
+const LISTING_TAGS: &str = "SELECT t.source, t.tag FROM tag t JOIN page p ON p.path = t.source
+     WHERE p.folder = ?1 ORDER BY t.source, t.tag";
+
 /// `folder_listing`'s deeper folders of a non-root folder `?3`, whose
 /// subtree is `[?1, ?2)`.
 const LISTING_DEEPER_IN: &str = "SELECT DISTINCT folder FROM page
@@ -149,6 +157,17 @@ impl PageRef {
     }
 }
 
+/// A page's entry in the folder listing, beyond its [`PageRef`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageDetails {
+    /// `""` when the page has none.
+    pub summary: String,
+    /// Seconds since the epoch; see [`SCHEMA`].
+    pub edited: i64,
+    /// Lowercase, sorted.
+    pub tags: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
     Unique(PageRef),
@@ -170,6 +189,7 @@ struct PageRow {
     body: String,
     /// When the page was last edited, seconds since the epoch; see [`SCHEMA`].
     edited: i64,
+    summary: String,
 }
 
 #[derive(Debug, Clone)]
@@ -389,12 +409,13 @@ impl<P: Host> Index<P> {
             }
         }
         tx.execute(
-            "INSERT INTO page (path, url, folder, title, key_full, key_stripped, mtime, body, edited)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO page (path, url, folder, title, key_full, key_stripped, mtime, body, edited,
+                 summary)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(path) DO UPDATE SET url = excluded.url, folder = excluded.folder,
                  title = excluded.title, key_full = excluded.key_full,
                  key_stripped = excluded.key_stripped, mtime = excluded.mtime,
-                 body = excluded.body, edited = excluded.edited",
+                 body = excluded.body, edited = excluded.edited, summary = excluded.summary",
             params![
                 page.path.as_str(),
                 page.url.as_str(),
@@ -405,6 +426,7 @@ impl<P: Host> Index<P> {
                 page.mtime,
                 page.body.as_str(),
                 page.edited,
+                page.summary.as_str(),
             ],
         )
         .await?;
@@ -644,6 +666,31 @@ impl<P: Host> Index<P> {
         Ok((folders, pages))
     }
 
+    /// What the folder listing shows of each page directly in `folder`,
+    /// keyed by path.
+    pub async fn listing_details(&self, folder: &str) -> Result<HashMap<String, PageDetails>> {
+        let conn = self.conn.lock().await;
+        let rows = conn.query(LISTING_DETAILS, [folder]).await?;
+        let mut details: HashMap<String, PageDetails> = collect(rows, |row| {
+            let details = PageDetails {
+                summary: row.get(1)?,
+                edited: row.get(2)?,
+                tags: Vec::new(),
+            };
+            Ok((row.get(0)?, details))
+        })
+        .await?
+        .into_iter()
+        .collect();
+        let rows = conn.query(LISTING_TAGS, [folder]).await?;
+        for (path, tag) in collect(rows, |row| Ok((row.get::<String>(0)?, row.get(1)?))).await? {
+            if let Some(page) = details.get_mut(&path) {
+                page.tags.push(tag);
+            }
+        }
+        Ok(details)
+    }
+
     /// The `n` most recently edited pages in `folder` or below it (`""` is
     /// the root), newest first, ties by path, each with its edited time in
     /// seconds since the epoch.
@@ -809,6 +856,7 @@ fn rows_for<P: Host>(
         mtime,
         body: ex.body_text.clone(),
         edited,
+        summary: ex.summary(),
     };
     let links = ex
         .wikilinks
@@ -1294,6 +1342,24 @@ mod tests {
         let index = fixture_index().await;
         assert_eq!(index.page(".hidden/Secret.md").await.unwrap(), None);
         assert_eq!(index.page("Notes/ignored.txt").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn listing_details_hold_summary_and_tags() {
+        let index = fixture_index().await;
+        let details = index.listing_details("Notes").await.unwrap();
+        assert_eq!(details.len(), 5);
+        let tagged = &details["Notes/Weather Tagged.md"];
+        assert_eq!(tagged.summary, "Filed under #zephyr only.");
+        assert_eq!(tagged.tags, ["zephyr"]);
+        assert!(tagged.edited > 0);
+        assert_eq!(
+            details["Notes/2024-03-05 Daily.md"].summary,
+            "Notes for the fifth."
+        );
+        assert!(details["Notes/2024-03-05 Daily.md"].tags.is_empty());
+        let home = &index.listing_details("").await.unwrap()["Home.md"];
+        assert_eq!(home.tags, ["meta", "project/alpha", "status"]);
     }
 
     #[tokio::test]
@@ -1847,7 +1913,7 @@ mod tests {
         drop(index);
         let index = reopen(&storage, &fixture()).await;
         assert_eq!(row_count(&index, "page").await, 0);
-        assert_eq!(stored_meta(&index).await.0, Some(2));
+        assert_eq!(stored_meta(&index).await.0, Some(INDEX_VERSION));
     }
 
     /// Claims `[[ABC-N]]` as a ticket, whose text is its ID.
@@ -2304,6 +2370,8 @@ mod tests {
         statements.extend(REMOVE_FOLDER.map(|sql| (sql, range.to_vec())));
         statements.push((MTIMES_IN, range.to_vec()));
         statements.push((LISTING_PAGES, vec!["Projects"]));
+        statements.push((LISTING_DETAILS, vec!["Projects"]));
+        statements.push((LISTING_TAGS, vec!["Projects"]));
         statements.push((LISTING_DEEPER_IN, path_and_range.to_vec()));
         statements.push((RECENT_IN, vec![low.as_str(), high.as_str(), "10"]));
         statements.push((CLOUD_IN, range.to_vec()));

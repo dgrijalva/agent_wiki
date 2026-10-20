@@ -384,10 +384,19 @@ Folder index pages, for now. "This will probably evolve." (Dave, 2026-10-19)
 > **Dave (2026-10-19):** "Maybe we can do some stuff to make it nicer… a list of the most recently edited documents at the top… Especially since we have a database where we've indexed all the contents, like we could do most recently edited documents, tag clouds… basically make it more useful."
 
 - **Recently edited documents**, at the top. Edit time: if a file is dirty, its local timestamp; if it's committed, its git timestamp. Kept in the index so it's cheap to read, written when updates are applied. (Dave, 2026-10-19) Exactness doesn't matter: "whichever one you have is kind of good enough." 
-- **Tag cloud.**
 - It doesn't need to replace host dashboards: "when this gets wrapped in [a host application], there's other dashboards and stuff, so we don't have to rebuild those here."
 
 - **On every folder index page**, not just the root — "it's just a single implementation, like every index page behaves the same." (Dave, 2026-10-19)
+
+> **Dave (2026-10-20):** "i'm fine with recently edited then the main listing, though they should be presented differently and clearly separated."
+
+- **Order: recently edited, then the main listing, then tags.** (Dave, 2026-10-20)
+- **Recently edited is just simple links.** (Dave, 2026-10-20)
+- **The main listing has a header**, and is clearly separated from recently edited. (Dave, 2026-10-20)
+  [PROVISIONAL: the header reads "Contents"; subfolders come first, as plain links, then the pages.]
+- **The main listing shows expanded content for each page:** title, file name, description/summary/first body text, edit date, tags. (Dave, 2026-10-20) The file name because "when the title or first heading is not the same as the filename, it can be confusing."
+  [PROVISIONAL: the summary is frontmatter `description`, else frontmatter `summary`, else the text of the first paragraph, cut to 280 characters. It is stored in the index.]
+- **Tags at the bottom: the top 25, each with its count when it is greater than one,** e.g. `#foo (3)`. No sizing by weight: "it looks messy." (Dave, 2026-10-20)
 
 [OPEN: what else goes on the index page.]
 
@@ -408,10 +417,12 @@ Folder index pages, for now. "This will probably evolve." (Dave, 2026-10-19)
 > **Dave (2026-10-19):** "Because this is meant to be embedded in multiple places, we probably want to let the host application control the styling. The stuff you built looks fine… as a built-in stylesheet, it's okay."
 
 - The host controls styling; it can pass a base stylesheet through the builder.
-- The current built-in stylesheet is fine as the default.
+- **The built-in theme is Rosé Pine.** (Dave, 2026-10-20)
+  [PROVISIONAL: Rosé Pine Dawn in light mode and Rosé Pine (main) in dark mode, with the matching highlight.js themes.]
+- **Code is set in a monospace font**; "just pick a monospace font for now." (Dave, 2026-10-20)
 
 - A host's styles **add to or replace** the built-in stylesheet. (Dave, 2026-10-19) A host replaces it through `suppress_default_styles()` (see Host API → Page wrapper).
-- **Dark mode:** yes. (Dave, 2026-10-19)
+- **Dark mode:** yes. (Dave, 2026-10-19) Light and dark follow the system automatically. (Dave, 2026-10-20)
 
 ## Live updates
 

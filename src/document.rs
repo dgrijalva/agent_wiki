@@ -23,6 +23,10 @@ pub(crate) struct Document<P: Host> {
 pub(crate) struct Extracted {
     pub(crate) title_from_frontmatter: Option<String>,
     pub(crate) first_heading: Option<String>,
+    /// The text of the first paragraph, as the fallback summary.
+    pub(crate) first_paragraph: Option<String>,
+    /// Frontmatter `description`, else frontmatter `summary`.
+    pub(crate) summary_from_frontmatter: Option<String>,
     /// Wikilink targets in document order, as written (a `#Heading`
     /// fragment included). None from inside images.
     pub(crate) wikilinks: Vec<String>,
@@ -50,7 +54,25 @@ impl Extracted {
             .or_else(|| self.first_heading.clone())
             .unwrap_or_else(|| stem.to_string())
     }
+
+    /// The frontmatter description or summary, else the first paragraph's
+    /// text, cut to [`SUMMARY_CHARS`]; empty when there is none.
+    pub(crate) fn summary(&self) -> String {
+        let text = self
+            .summary_from_frontmatter
+            .as_deref()
+            .or(self.first_paragraph.as_deref())
+            .unwrap_or("");
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        match text.char_indices().nth(SUMMARY_CHARS) {
+            Some((end, _)) => format!("{}…", text[..end].trim_end()),
+            None => text,
+        }
+    }
 }
+
+/// The longest summary, in characters, before the `…`.
+const SUMMARY_CHARS: usize = 280;
 
 impl<P: Host> Document<P> {
     /// One walk of the body. Nodes left in the arena but never attached
@@ -83,6 +105,12 @@ impl<P: Host> Document<P> {
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|t| !t.is_empty())
+                .map(str::to_string);
+            ex.summary_from_frontmatter = ["description", "summary"]
+                .iter()
+                .filter_map(|key| map.get(*key).and_then(Value::as_str))
+                .map(str::trim)
+                .find(|t| !t.is_empty())
                 .map(str::to_string);
             let tags = match map.get("tags") {
                 Some(Value::String(s)) => vec![s.as_str()],
@@ -124,6 +152,13 @@ impl<P: Host> Walk<'_, P> {
                     let slug = self.unique(slug(&text));
                     self.ex.headings.insert(id, slug);
                     self.ex.first_heading.get_or_insert(text);
+                }
+                BlockKind::Paragraph if self.ex.first_paragraph.is_none() => {
+                    let mut text = String::new();
+                    plain_text(self.tree, id, &mut text);
+                    if !text.trim().is_empty() {
+                        self.ex.first_paragraph = Some(text);
+                    }
                 }
                 BlockKind::Code { body, .. } => self.body(body),
                 BlockKind::Host(element) => self.host_text(element),
@@ -295,6 +330,25 @@ mod tests {
         let ex = plain("![[a.png|Alt]] #t ![[Note]] x![[b.PNG]]\n");
         assert_eq!(ex.inline_tags, ["t"]);
         assert!(ex.wikilinks.is_empty());
+    }
+
+    #[test]
+    fn summary_is_frontmatter_else_first_paragraph() {
+        let summary = |md: &str| plain(md).summary();
+        assert_eq!(
+            summary("# T\n\nFirst *para*\nwraps.\n\nSecond.\n"),
+            "First para wraps."
+        );
+        assert_eq!(summary("---\nsummary: S\n---\nBody.\n"), "S");
+        assert_eq!(
+            summary("---\nsummary: S\ndescription: D\n---\nBody.\n"),
+            "D"
+        );
+        assert_eq!(summary("---\ndescription: '  '\n---\nBody.\n"), "Body.");
+        assert_eq!(summary("# Only a heading\n"), "");
+        let long = summary(&"word ".repeat(100));
+        assert_eq!(long.chars().count(), 280);
+        assert!(long.ends_with("word…"), "{long}");
     }
 
     #[test]

@@ -185,25 +185,21 @@ async fn folder_indexes_show_recent_and_tags() {
     let app = root_app().await;
     let body = ok_body(&app, "/").await;
     let recent_at = body.find("<h2>Recently edited</h2>").expect("recent");
+    let contents_at = body.find("<h2>Contents</h2>").expect("contents");
     let tags_at = body.find("<h2>Tags</h2>").expect("tags");
-    let listing_at = body
-        .find("<a href=\"/Notes/\">Notes/</a>")
-        .expect("listing");
-    assert!(recent_at < tags_at && tags_at < listing_at, "{body}");
-    assert_eq!(
-        section(&body, "<h2>Recently edited</h2>")
-            .matches("<li>")
-            .count(),
-        10
-    );
+    assert!(recent_at < contents_at && contents_at < tags_at, "{body}");
+    let recent = section(&body, "<h2>Recently edited</h2>");
+    assert_eq!(recent.matches("<li>").count(), 10);
+    // Just links: no dates.
+    assert!(!recent.contains("<time>"), "{recent}");
 
-    let cloud = section(&body, "<h2>Tags</h2>");
-    let status = anchor_containing(cloud, "href=\"/_wiki/tag/status\"");
-    assert!(status.contains("title=\"2 pages\""), "{status}");
-    assert!(cloud.contains(">#status</a>"), "{cloud}");
-    let meta = anchor_containing(cloud, "href=\"/_wiki/tag/meta\"");
-    assert!(meta.contains("title=\"1 pages\""), "{meta}");
-    assert!(cloud.contains(">#meta</a>"), "{cloud}");
+    let tags = section(&body, "<h2>Tags</h2>");
+    assert!(
+        tags.contains(">#status <span class=\"count\">(2)</span></a>"),
+        "{tags}"
+    );
+    assert!(tags.contains(">#meta</a>"), "{tags}");
+    assert!(!tags.contains("font-size"), "{tags}");
 
     let body = ok_body(&app, "/Projects/").await;
     let cloud = section(&body, "<h2>Tags</h2>");
@@ -222,6 +218,36 @@ async fn folder_indexes_show_recent_and_tags() {
     assert!(
         section(&body, "<h2>Recently edited</h2>").contains(">Nested Note</a>"),
         "{body}"
+    );
+}
+
+#[tokio::test]
+async fn folder_listing_shows_page_details() {
+    let app = root_app().await;
+    let body = ok_body(&app, "/Notes/").await;
+    let contents = section(&body, "<h2>Contents</h2>");
+    let at = contents.find(">Weather Tagged</a>").expect("entry");
+    let entry = &contents[at..];
+    let entry = &entry[..entry.find("</li>").unwrap()];
+    assert!(
+        entry.contains("<span class=\"file\">Weather Tagged.md</span>"),
+        "{entry}"
+    );
+    assert!(entry.contains("<time>"), "{entry}");
+    assert!(
+        entry.contains("<p class=\"summary\">Filed under #zephyr only.</p>"),
+        "{entry}"
+    );
+    assert!(
+        entry.contains("<a class=\"tag\" href=\"/_wiki/tag/zephyr\">#zephyr</a>"),
+        "{entry}"
+    );
+
+    let body = ok_body(&app, "/").await;
+    let contents = section(&body, "<h2>Contents</h2>");
+    assert!(
+        contents.contains("<li class=\"folder\"><a href=\"/Notes/\">Notes/</a></li>"),
+        "{contents}"
     );
 }
 
@@ -473,7 +499,7 @@ async fn host_stylesheet_layers_after_builtin() {
 async fn builtin_stylesheet_has_dark_mode() {
     let body = ok_body(&root_app().await, "/Home").await;
     assert!(body.contains("prefers-color-scheme: dark"));
-    assert!(body.contains("github-dark.min.css"));
+    assert!(body.contains("styles/rose-pine.min.css"));
 }
 
 #[tokio::test]

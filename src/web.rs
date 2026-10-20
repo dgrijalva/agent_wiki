@@ -15,7 +15,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use crate::Wiki;
 use crate::document::{Document, slug};
 use crate::draw::{DrawCx, WikiHref, draw_blocks, tag_href};
-use crate::index::{FsKind, PageRef, Resolution, fs_kind, search_terms};
+use crate::index::{FsKind, PageDetails, PageRef, Resolution, fs_kind, search_terms};
 use crate::links::local_href;
 use crate::names::{
     LinkTarget, encode_component, folder_url, image_type_of, path_to_url, url_to_path, url_to_rel,
@@ -24,9 +24,9 @@ use crate::parse::{Host, parse};
 use crate::template::{BodyCtx, DocumentMeta, HeadCtx, PageKind, Template};
 
 const HLJS_CSS: &str =
-    "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/github.min.css";
+    "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/rose-pine-dawn.min.css";
 const HLJS_DARK_CSS: &str =
-    "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/github-dark.min.css";
+    "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/rose-pine.min.css";
 const HLJS_JS: &str =
     "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/highlight.min.js";
 const MERMAID_JS: &str = "https://cdn.jsdelivr.net/npm/mermaid@12/dist/mermaid.esm.min.mjs";
@@ -35,39 +35,76 @@ const HTMX_SSE_JS: &str = "https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4/dist/
 
 /// How many pages "Recently edited" shows.
 const RECENT: usize = 10;
-/// How many tags the tag cloud shows.
-const CLOUD: usize = 50;
+/// How many tags a folder index shows.
+const TOP_TAGS: usize = 25;
 
+/// Rosé Pine: Dawn in light mode, the main variant in dark mode.
 const STYLE: &str = "
 :root { color-scheme: light dark;
-  --fg: #1f2328; --bg: #ffffff; --muted: #59636e; --link: #0969da; --unresolved: #bc4c00;
-  --border: #d1d9e0; --code-bg: #eff2f5; --line-target: #fff8c5; }
+  --fg: #575279; --bg: #faf4ed; --surface: #fffaf3; --muted: #797593; --faint: #9893a5;
+  --link: #286983; --tag: #907aa9; --unresolved: #b4637a; --border: #dfdad9;
+  --code-bg: #f2e9e1; --line-target: #ea9d3433;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; }
 @media (prefers-color-scheme: dark) {
-  :root { --fg: #e6edf3; --bg: #0d1117; --muted: #9198a1; --link: #4493f8; --unresolved: #db6d28;
-    --border: #3d444d; --code-bg: #151b23; --line-target: #bb800926; }
+  :root { --fg: #e0def4; --bg: #191724; --surface: #1f1d2e; --muted: #908caa; --faint: #6e6a86;
+    --link: #9ccfd8; --tag: #c4a7e7; --unresolved: #eb6f92; --border: #403d52;
+    --code-bg: #26233a; --line-target: #f6c17726; }
 }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   max-width: 48rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; line-height: 1.7;
   color: var(--fg); background: var(--bg); }
+form[role=search] { margin-bottom: 1rem; }
+input[type=search] { font: inherit; width: 100%; max-width: 20rem; box-sizing: border-box;
+  padding: 0.3rem 0.75rem; color: var(--fg); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 0.5rem; }
+input[type=search]:focus { outline: 2px solid var(--link); outline-offset: -1px; }
 header { margin-bottom: 1.5rem; color: var(--muted); }
 header nav a, header .tags a { margin-right: 0.25rem; }
 p, ul, ol, pre, table, blockquote, details { margin: 0 0 1.25rem; }
 li { margin: 0.4rem 0; }
 h1, h2, h3, h4, h5, h6 { line-height: 1.3; margin: 2rem 0 1rem; }
-a.anchor { margin-left: 0.4rem; color: var(--muted); text-decoration: none; opacity: 0; }
+h1, h2 { padding-bottom: 0.3rem; border-bottom: 1px solid var(--border); }
+a.anchor { margin-left: 0.4rem; color: var(--faint); text-decoration: none; opacity: 0; }
 :is(h1, h2, h3, h4, h5, h6):hover > a.anchor, a.anchor:focus { opacity: 1; }
-a { color: var(--link); }
+a { color: var(--link); text-underline-offset: 0.2em; }
 a.unresolved { color: var(--unresolved); }
-a.tag { text-decoration: none; }
+a.tag { color: var(--tag); text-decoration: none; }
+a.tag:hover { text-decoration: underline; }
 .muted { color: var(--muted); }
-pre { overflow-x: auto; }
-code { font-size: 0.9em; }
-:not(pre) > code { background: var(--code-bg); }
+blockquote { margin-left: 0; padding-left: 1rem; border-left: 3px solid var(--border);
+  color: var(--muted); }
+hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+code { font-family: var(--mono); font-size: 0.875em; }
+:not(pre) > code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 0.3rem; }
+pre { overflow-x: auto; border-radius: 0.5rem; background: var(--code-bg); }
+pre > code { display: block; padding: 1rem; }
+pre.mermaid { background: none; }
 table { border-collapse: collapse; }
 th, td { border: 1px solid var(--border); padding: 0.3rem 0.75rem; text-align: left; vertical-align: top; }
+th { background: var(--surface); }
 details summary { cursor: pointer; color: var(--muted); }
 details table { margin-top: 0.75rem; }
 .line-target { background: var(--line-target); }
+.index h2 { margin-top: 2.5rem; }
+.recent h2, .top-tags h2 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted); border: none; margin: 1.5rem 0 0.5rem; }
+.recent ul { list-style: none; padding: 0.5rem 1rem; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 0.5rem; }
+.recent li { margin: 0.15rem 0; }
+.listing { list-style: none; padding: 0; }
+.listing > li { margin: 0; padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
+.listing > li:last-child { border-bottom: none; }
+.listing .folder a { font-weight: 600; }
+.entry-head { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; }
+.entry-head a { font-weight: 600; }
+.entry-head .file { margin-left: 0.4rem; font-family: var(--mono); font-size: 0.8rem;
+  color: var(--faint); }
+.entry-head time { flex: none; font-size: 0.85rem; color: var(--faint); }
+.listing .summary { margin: 0.2rem 0 0; color: var(--muted); }
+.listing .tags { margin: 0.2rem 0 0; font-size: 0.9rem; }
+.listing .tags a, .top-tags a { margin-right: 0.6rem; }
+.top-tags p { margin: 0; }
+.top-tags .count { color: var(--faint); }
 ";
 
 /// Line links, `#:N`: the last block in the htmx root whose `data-line` is
@@ -399,8 +436,9 @@ async fn folder_page<P: Host>(wiki: &Wiki<P>, request: &Parts, folder: &str) -> 
     }
     let index = &wiki.inner.index;
     let (folders, pages) = index.folder_listing(folder).await?;
+    let details = index.listing_details(folder).await?;
     let recent = index.recent(folder, RECENT).await?;
-    let cloud = index.tag_cloud(folder, CLOUD).await?;
+    let top_tags = index.tag_cloud(folder, TOP_TAGS).await?;
     let title = match folder.rsplit_once('/') {
         Some((_, name)) => name,
         None if folder.is_empty() => "Index",
@@ -409,29 +447,38 @@ async fn folder_page<P: Host>(wiki: &Wiki<P>, request: &Parts, folder: &str) -> 
     let content = |_: &BodyCtx<'_, P>| {
         html! {
             h1 { (title) }
-            @if !recent.is_empty() {
-                h2 { "Recently edited" }
-                ul {
-                    @for (page, edited) in &recent {
-                        (page_item(base, page, html! { " " span.muted { (utc_date(*edited)) } }))
+            div.index {
+                @if !recent.is_empty() {
+                    section.recent {
+                        h2 { "Recently edited" }
+                        ul {
+                            @for (page, _) in &recent {
+                                li { a href={ (base) (page.url) } { (page.title) } }
+                            }
+                        }
                     }
                 }
-            }
-            @if !cloud.is_empty() {
-                h2 { "Tags" }
-                (tag_cloud(base, &cloud))
-            }
-            ul {
-                @for name in &folders {
-                    @let path = if folder.is_empty() {
-                        name.clone()
-                    } else {
-                        format!("{folder}/{name}")
-                    };
-                    li { a href={ (base) (folder_url(&path)) } { (name) "/" } }
+                section.contents {
+                    h2 { "Contents" }
+                    ul.listing {
+                        @for name in &folders {
+                            @let path = if folder.is_empty() {
+                                name.clone()
+                            } else {
+                                format!("{folder}/{name}")
+                            };
+                            li.folder { a href={ (base) (folder_url(&path)) } { (name) "/" } }
+                        }
+                        @for page in &pages {
+                            (listing_entry(base, page, details.get(&page.path)))
+                        }
+                    }
                 }
-                @for page in &pages {
-                    (page_item(base, page, html! {}))
+                @if !top_tags.is_empty() {
+                    section.top-tags {
+                        h2 { "Tags" }
+                        (tag_list(base, &top_tags))
+                    }
                 }
             }
         }
@@ -446,24 +493,46 @@ async fn folder_page<P: Host>(wiki: &Wiki<P>, request: &Parts, folder: &str) -> 
     Ok(Html(draw_page(wiki, request, page, &content).await).into_response())
 }
 
-/// The tag cloud: each tag linked to its tag page, sized linearly by weight
-/// from 0.85rem (lightest shown) to 1.6rem (heaviest shown).
-fn tag_cloud(base: &str, tags: &[(String, usize)]) -> Markup {
-    let min = tags.iter().map(|(_, w)| *w).min().unwrap_or(0);
-    let max = tags.iter().map(|(_, w)| *w).max().unwrap_or(0);
+/// A page in the folder listing: its title, file name and edit date, then
+/// its summary and tags when it has them.
+fn listing_entry(base: &str, page: &PageRef, details: Option<&PageDetails>) -> Markup {
     html! {
-        p.tag-cloud {
-            @for (i, (tag, weight)) in tags.iter().enumerate() {
-                @let scale = if max > min {
-                    (weight - min) as f64 / (max - min) as f64
-                } else {
-                    0.0
-                };
-                @if i > 0 { " " }
-                a.tag href=(tag_href(base, tag)) title={ (weight) " pages" }
-                    style=(format!("font-size: {:.2}rem", 0.85 + 0.75 * scale)) {
-                    "#" (tag)
+        li {
+            div.entry-head {
+                span {
+                    a href={ (base) (page.url) } { (page.title) }
+                    " " span.file { (page.path.rsplit('/').next().unwrap_or(&page.path)) }
                 }
+                @if let Some(details) = details {
+                    time { (utc_date(details.edited)) }
+                }
+            }
+            @if let Some(details) = details {
+                @if !details.summary.is_empty() {
+                    p.summary { (details.summary) }
+                }
+                @if !details.tags.is_empty() {
+                    p.tags {
+                        @for tag in &details.tags {
+                            a.tag href=(tag_href(base, tag)) { "#" (tag) } " "
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Each tag linked to its tag page, with its page count when above one.
+fn tag_list(base: &str, tags: &[(String, usize)]) -> Markup {
+    html! {
+        p {
+            @for (tag, count) in tags {
+                a.tag href=(tag_href(base, tag)) {
+                    "#" (tag)
+                    @if *count > 1 { " " span.count { "(" (count) ")" } }
+                }
+                " "
             }
         }
     }

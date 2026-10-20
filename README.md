@@ -12,7 +12,7 @@ Early prototype. The API will change.
 - **Wikilinks** match file names loosely: case-insensitive, `-` and `_` match spaces, and a leading date is ignored. A link with no single match goes to a disambiguation page listing every page that references it.
 - **Tags** go to a tag page listing every page that uses them.
 - **Search** over titles, tags and body text, ranked in that order.
-- **Folder index pages** list recently edited pages and a tag cloud for everything below them, then the folder's subfolders and pages.
+- **Folder index pages** list recently edited pages below them, then the folder's subfolders and pages with each page's summary, edit date and tags, then the top tags below them.
 - **Live updates:** an open page updates in place when its file changes on disk.
 - **Links:** headings are linkable, `[[Page#Heading]]` jumps to the heading, `#:N` links to line N of the page's source, and `{base}/foo/bar.md` reaches the page at `{base}/foo/bar`.
 - **Images** and ordinary links resolve relative to the page, or from the root with a leading `/`, and never leave the root folder.

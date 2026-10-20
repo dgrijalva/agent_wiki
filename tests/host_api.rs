@@ -166,7 +166,7 @@ async fn the_head_hook_sets_the_title_and_drops_the_builtin_style() {
         // The built-in stylesheet is gone; highlighting and the builder's
         // stylesheet stay.
         assert!(!body.contains("--unresolved"), "{uri}");
-        assert!(body.contains("github.min.css"), "{uri}");
+        assert!(body.contains("rose-pine-dawn.min.css"), "{uri}");
         assert!(body.contains("--probe-host"), "{uri}");
         // Host markup comes after the library's head contents.
         let host = body.find("<meta name=\"test-head\">").unwrap();
