@@ -125,18 +125,27 @@ impl<P: Host> BlockStream<'_, P> {
 
 // ─── Drawing: parsing in reverse ────────────────────────────────────────────
 
-/// Host elements are plain data that draw themselves around their children.
+/// Anything that draws: tree nodes, a `Document`, page components (search
+/// box, breadcrumbs, recently edited), host elements. Plain data; what `cx`
+/// doesn't give it, it carries in its own state.
 pub trait Element<P: Host>: Sized {
-    /// `children` draws the node's children (maud `Render`), so it drops into
-    /// `html!` as `(children)`. `cx.base_path()` is where the wiki is mounted.
-    fn draw(&self, cx: &DrawCtx<'_>, children: DrawChildren<'_, P>) -> maud::Markup;
+    /// `cx.draw_children()` draws the node's children (maud `Render`), so it
+    /// drops into `html!`; nothing for an element with no children in a
+    /// tree. `cx.base_path()` is where the wiki is mounted. Synchronous:
+    /// async work happens when the element is built.
+    fn draw(&self, cx: &DrawCtx<'_, P>) -> maud::Markup;
 
     /// Text this element contributes to search, besides its children's.
     fn text(&self) -> Option<String> { None }
 }
 
 /// `base_path()`: no trailing slash, `""` at the root.
-pub struct DrawCtx<'a> { /* … */ }
+pub struct DrawCtx<'a, P: Host> { /* … the node being drawn, if any */ }
+
+impl<P: Host> DrawCtx<'_, P> {
+    pub fn base_path(&self) -> &str;
+    pub fn draw_children(&self) -> DrawChildren<'_, P>;
+}
 
 pub struct DrawChildren<'a, P: Host> { /* … */ }
 impl<P: Host> maud::Render for DrawChildren<'_, P> { /* … */ }
@@ -205,14 +214,14 @@ impl Host for SampleHost {
 }
 
 impl Element<SampleHost> for SampleInline {
-    fn draw(&self, _cx: &DrawCtx<'_>, children: DrawChildren<'_, SampleHost>) -> maud::Markup {
+    fn draw(&self, cx: &DrawCtx<'_, SampleHost>) -> maud::Markup {
         match self {
             SampleInline::Ticket(id) => html! {
                 // Live status: htmx fragment from the host, or the host's own toolkit (e.g. Alpine).
                 span.ticket hx-get={ "/api/linear/" (id) } hx-trigger="load" { (id) }
             },
             SampleInline::Marker { kind } => html! {
-                span class={ "marker marker-" (kind) } { (children) }
+                span class={ "marker marker-" (kind) } { (cx.draw_children()) }
             },
         }
     }

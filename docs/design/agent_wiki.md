@@ -20,7 +20,7 @@ The standing definition of agent_wiki. Unmarked prose is decided; anything not d
 
 - **Library surface:** something that can be dropped into an axum router, with a defined root path. (Dave, 2026-10-19)
   > **Dave:** "So something like [a host application] could host the whole thing under `/docs` and also host other, application specific content."
-- **One crate.** (Dave, 2026-10-19)
+- **One crate**, plus a separate crate for derive macros, since proc macros need their own crate. (Dave, 2026-10-19; derive crate 2026-10-21: "i understand macros need their own crate. it's fine.")
 
 ### Construction — a builder
 
@@ -86,9 +86,21 @@ Two places where host behaviour has to be configurable:
 - **The most recently updated documents in a tree**, e.g. the first 20.
 - **No raw SQL access.**
 
-**Watching for changes.** Since agent_wiki already watches the files and processes what changed, it can offer hosts a rich API for this: an async channel to subscribe to updates, for specific files or trees. "We don't have to solve that now, but it's a good call out for something that we should build support for." (Dave, 2026-10-19)
+**Folders and documents.** (Dave, 2026-10-21)
 
-[OPEN: the shape of the watch API.]
+- **The wiki is a tree of folders and documents.** The root is a **Folder**; it contains documents and folders. A folder renders as an index page.
+- **The API starts small:** `root()`, `lookup(path) -> enum { Folder, Document }`, a walker, and `search(query, opts) -> Vec<Document>`.
+- **`search` takes a `limit`.** Pagination is deferred.
+- **A Document parses its file when it is loaded.** "It seems like parsing is fast enough that we can just parse files on load and worry about that later." (Dave, 2026-10-21)
+- **Data is generated on demand where it can be.** Expensive data is behind accessor functions, so it can be optimized under the hood. Data that should always be live can be optimized later, e.g. materialized from the db. "I'm also skeptical this is even a concern unless there are thousands of results."
+- "There are probably some other things worth exposing to the API like the backlinks data, the outline."
+
+**Watching for changes.** Since agent_wiki already watches the files and processes what changed, it can offer hosts a rich API for this. "We don't have to solve that now, but it's a good call out for something that we should build support for." (Dave, 2026-10-19)
+
+- **Folders and documents can be watched.** (Dave, 2026-10-21) The indexer already knows when they change.
+- **A watch answers two questions:** "has this changed since I looked?" and "wait for a change". A watcher doesn't need every signal, so it can't fall behind. "A watcher might be a better fit" than a broadcast channel (Dave, 2026-10-21), i.e. `tokio::sync::watch`.
+- **A document's watch says whether it was modified or removed.** (Dave, 2026-10-21)
+- **A folder's watch covers its whole subtree**, and its value is a change counter: it says that something under the folder changed, not what. (Dave, 2026-10-21)
 
 ### Content hooks
 
@@ -126,7 +138,7 @@ Chosen over limiting custom inserts to a fixed set of markdown-like shapes. (Dav
 - **Built-in syntax is the library's own matchers.** A host overrides one by matching first; e.g. a host's `[[ABC-1234]]` is a ticket, not a wikilink.
 - **A claimed node is no longer what it was.** Once a host claims a `[[ABC-1234]]` wikilink as a ticket, it isn't a wikilink. It leaves the wikilink index and no longer produces disambiguation pages. (Dave, 2026-10-19)
 - **The parse hook is synchronous and does no I/O.** Pages are parsed on every request, and nothing slow belongs in the page-load path. Live data (e.g. ticket status) does not come from the parse hook. (Dave, 2026-10-19)
-- **Parse hooks are pure.** (Dave, 2026-10-19) Any other work is done afterwards, by walking the graph once it's built: "We can do any post-processing work by walking the graph after it's created." Rendering hooks may also need to be pure and synchronous; that hasn't been settled.
+- **Parse hooks are pure.** (Dave, 2026-10-19) Any other work is done afterwards, by walking the graph once it's built: "We can do any post-processing work by walking the graph after it's created." Drawing an element is synchronous (see Drawing).
 - **The API must not commit to nesting.** (Dave, 2026-10-19) "The problem with the API returning `Foo(Bar(Vec<Baz>))` is that you can't change this to use daggy without also having a separate representation that doesn't nest one in the other." So a node's kind holds no children, and children are an opaque library type (see the sketch).
 - **Two host element types: `P::Block` and `P::Inline`.** Public types are parameterized by the host type `P` (see the `Host` trait below), e.g. `BlockKind<P>` with `Host(P::Block)` and `InlineKind<P>` with `Host(P::Inline)`. (Dave, 2026-10-19)
 - **Storage: an arena.** "There are good, mature off the shelf solutions to this, like daggy." (Dave, 2026-10-19)
@@ -148,9 +160,33 @@ Chosen over limiting custom inserts to a fixed set of markdown-like shapes. (Dav
 - **Round-tripping is interesting.** Converting the tree back to markdown would make document editing possible in the API. A round trip serializes the tree; splicing edits into the source text is ruled out ("a nightmare to implement"). (Dave, 2026-10-19) This bears on the existing `[OPEN: read-only, or any editing.]`.
 - **Not needed for the first host integration**, nor is serializing back to markdown. (Dave, 2026-10-19)
 
-[OPEN: persisting or indexing host-produced data, or not. Deferred: "in the beginning it's just like how do we produce the data."]
-- **Changing a host's parse rules doesn't trigger a reindex.** A persisted index is rebuilt only when agent_wiki's own index version changes. For now, a host that changes its rules deletes the index file and starts again. (Dave, 2026-10-19)
-  [OPEN: deferred — an API for the host to trigger reindexing.]
+### Host entity types in the index
+
+> **Dave (2026-10-21):** "how to let the host application integrate their data types into the other parts of the system. for example, pre-index all the linear ticket references in each file and include that as a section on an index page. or build a dashboard that shows all your `@mentions` by recency… it would be cool if we could make it easy to participate… could we do something like, a derive macro that let's you mark up how your type gets indexed. each entity type gets its own table. the table schema is derived from the code. if the code changes, the table gets blown away and rebuilt. we could mark fields for index types (full text, semantic, etc)."
+
+- **A derive defines an entity type.** Whether it reuses a host element struct or is a new struct is up to the host. (Dave, 2026-10-21)
+- **Each entity type gets its own table**, with its schema derived from the code.
+- **Records are collected by extraction:** a single method on `Host` that produces records from a document. (Dave, 2026-10-21) Parse hooks stay pure; extraction is the post-processing walk of the built tree.
+- **Entity types are registered with a registration method**, separately from extraction. (Dave, 2026-10-21)
+- **Every row gets a unique id and its source info.** (Dave, 2026-10-21)
+  [PROVISIONAL: the source info is the page's id plus the record's ordinal in the document. Nothing is denormalized; page fields such as `folder` and `edited` come from a join.]
+- **Recency is per document:** a record is as recent as its page's edit time. (Dave, 2026-10-21: "document level granularity is probably fine.")
+- **Fields are marked with index kinds** (Dave, 2026-10-21):
+  - **Exact and b-tree.**
+  - **Full text.** One FTS table per entity type is fine. Full-text search over host records stands on its own, e.g. Obsidian-style tasks searched apart from documents. Host elements' text already reaches the document's full-text index through `Element::text`.
+  - **Semantic: deferred**, but clearly wanted when semantic search is built. "Would be super cool to be able to just annotate a column and have it work. Easy with a default embedder. Probably possible to specify in attribute."
+  [OPEN: deferred — mixed search across documents and entity types.]
+- **Built-in indexed data (wikilinks, tags) uses the same mechanism where feasible.** (Dave, 2026-10-21)
+- **Querying entity types is deferred.** "Big topic." It starts with the document API (see The data layer). (Dave, 2026-10-21)
+  [OPEN: deferred — querying entity types, and whether hosts share the db handle. "Not needed now, but will need to revisit as part of the querying discussion."]
+
+### Reindexing
+
+> **Dave (2026-10-21):** "'user deletes index file' is not a permanently tenable position. that was basically a defer. i think we do need to figure out a way to trigger a full or partial reindex. it's way simpler than building migrations."
+
+- **Schemas are versioned.** When a schema's version changes, its tables are blown away and reindexed.
+- **The version is a hash of the schema plus a version number.** The hash is computed mechanically from the `CREATE TABLE` string or equivalent; the version number covers changes the schema doesn't show, such as a changed extraction rule. (Dave, 2026-10-21: "hash plus version.")
+- **A reindex API**, and a **`--reindex` flag** on the binary. (Dave, 2026-10-21)
 
 ### Page wrapper — hooks into the draw cycle
 
@@ -177,7 +213,6 @@ Dave's first take:
 Not yet addressed. Deferred until after the first prototype (Dave, 2026-10-19: "capture and defer the undecided parts"):
 
 [OPEN: whether `suppress_default_styles()` also drops the code-highlighting stylesheets, and whether a host can theme mermaid.]
-[OPEN: whether a host can replace (not just wrap) the bodies of pages that aren't documents: folder index, search, tag, disambiguation.]
 [OPEN: whether a host can set attributes on `<html>` and `<body>`, e.g. `lang`, or a theme class.]
 [OPEN: how host scripts re-run after a live-update swap. A host listening for `htmx:afterSwap` itself is the default.]
 [OPEN: assets a host element needs, loaded only on pages where the element appears. Until then the host includes its scripts on every page through `head()`.]
@@ -200,11 +235,44 @@ Not yet addressed. Deferred until after the first prototype (Dave, 2026-10-19: "
 #### Drawing
 
 - **Rendering is part of the element trait.** Host-provided element types turn themselves into HTML. (Dave, 2026-10-19)
-- **Drawing is the parsing shape in reverse.** (Dave, 2026-10-19) Roughly `fn draw(&self, children) -> String`: an element renders itself to HTML and calls `draw` on its children.
-- **`Element::draw` gets the base path**, so elements can generate relative paths. (Dave, 2026-10-19)
+- **Drawing is the parsing shape in reverse.** (Dave, 2026-10-19) An element renders itself to HTML and draws its children inside it.
+- **`draw(&self, cx) -> Markup`.** Children are drawn with `cx.draw_children()`; drawing them is all an element does with them. An element with no children in a tree draws none. (Dave, 2026-10-21)
+- **`Element::draw` gets the base path** through `cx`, so elements can generate relative paths. (Dave, 2026-10-19)
+- **An element gets what it needs from `cx`, or carries it in its own state**, e.g. `Breadcrumbs(path)`. (Dave, 2026-10-21)
+- **Drawing is synchronous.** Async work, such as index queries, happens when an element is built, e.g. `get_recently_edited(…).await`. (Dave, 2026-10-21)
 
 - **Server-side HTML: maud**, "as long as it doesn't make the API super complicated." (Dave, 2026-10-19)
 - **In the browser: htmx, and the host is free to add its own.** For example, a host could use Alpine to build its Linear widget. (Dave, 2026-10-19)
+
+### Layers for drawing pages
+
+> **Dave (2026-10-21):** "every time we add features, i'm going to have to go re-integrate them into the other applications… there's also the other direction, that i'm thinking about other pages in the target applications that want to use data from the wiki. as the host applications get more complex, so will the need to customize exactly which components get drawn where and how. i've always thought apple did an excellent job with layering their APIs, so developers can operate at the highest level of abstraction for the parts where they don't need to mess with the details, but at lower levels when they need precise control."
+
+The layers, highest first (Dave, 2026-10-21: "that stack looks about right"):
+
+1. **Router:** mount the whole wiki.
+2. **Template:** wrap every page (see Page wrapper).
+3. **Page bodies:** the content of folder index, search, tag and disambiguation pages, each replaceable as a unit.
+4. **Components:** individual renderable parts, such as the recently edited list and the tag cloud.
+5. **Data:** the data structures the components draw from (see The data layer).
+
+- **The point is that one host's needs don't land on every host.** "I was worried about if I wanted to add a UI element for one use case, every use case would have to live with it." (Dave, 2026-10-21)
+- [PROVISIONAL: the default page bodies are built only from public components, and the components only from public data, so a host composing components picks up library changes to them.]
+- **Component parameters stay simple and reasonable.** A host that needs something hyper-specific builds its own version from the data layer. "I am concerned about accidentally rebuilding react here." (Dave, 2026-10-21)
+- **Markup is not a contract.** "We're still figuring this thing out. None of it is stable." (Dave, 2026-10-21)
+- **Every component is an `Element`:** anything that produces maud. (Dave, 2026-10-21) `BlockKind` and `InlineKind` describe the parts of a document body; zooming out, a `Document` is also an element, as are the search box, breadcrumbs, recently edited and the tag cloud.
+- **A `Document` carries its own drawing state**, such as resolved wikilinks and heading ids, and draws its own tree.
+- **Page-level effects stay with the page**, outside the element model: the title, head assets, and the live-update wiring. (Dave, 2026-10-21: "this just sounds like special case stuff? does it need to fit?")
+
+#### Custom pages
+
+> **Dave (2026-10-21):** "if the host application could have a 'custom page' entrypoint they could call, they could build their own pages using the same code structure as document or index pages. basically 'render a page from inside the engine'. it just returns html, so they can do whatever they want with the resulting data. we could also use this as a path for future integration stuff."
+
+- **Host routes stay outside the wiki.** A host route calls the entrypoint and gets back HTML.
+- **It is the same API as rendering another kind of page**, except that it comes out empty unless the host adds content. (Dave, 2026-10-21)
+- **Dave's example:** a host dashboard that includes the recently edited list from the `projects` folder's index page.
+- **Custom pages can live update** (see Live updates).
+[OPEN: whether custom pages count as open pages for the MCP `open_files` tool and selection.]
 
 ### First host integration
 
@@ -435,6 +503,17 @@ An open page updates when its file changes on disk.
 - **Update in place** is preferred; "we can do a reload if needed."
 
 - **htmx** for this first iteration. (Dave, 2026-10-19) "We might want some local toolkit for building widgets… but I think htmx is okay for this first iteration."
+
+**Signalling a page by URL.** (Dave, 2026-10-21)
+
+- **A page's channel exists only while its live-update stream is connected.** It is created when the stream connects, and registered under the page's URL.
+- **A host signals a page by URL:** it looks up the channel, and posts to it if it exists. What triggers a signal is up to the host; it can be any external event.
+- **One signal reaches every open instance of that page.**
+- **The key is the URL's path.** Query strings aren't used yet.
+  [OPEN: deferred — whether the query string is part of the key.]
+- **The stream tells the server its page's URL.**
+- **Document pages use the same mechanism:** the watcher signals the URL of each page it reindexes. (Dave, 2026-10-21: "same mechanism: great")
+- [PROVISIONAL: a page's channel is a `tokio::sync::watch`, so signals that arrive before the page refetches collapse into one refetch.]
 
 - **Standalone binary shutdown:** the first interrupt starts a graceful shutdown and prints that it is waiting for connections to close; a second interrupt kills it. (Dave, 2026-10-20) An open page's live-update stream doesn't end on its own, so with a page open the first interrupt waits until the second.
   [OPEN: the library ending its live-update streams on shutdown, so graceful shutdown completes with pages open, for the binary and for hosts.]
