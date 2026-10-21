@@ -478,6 +478,10 @@ agent_wiki serves an MCP server so agents can work with the wiki. (Dave, 2026-10
 - **Always on**, for now. (Dave, 2026-10-20)
 - **No cargo features**, for now. (Dave, 2026-10-20)
 - **Tool results refer to documents by file path, relative to the wiki root**, "since that's how the agent will access them". Page URLs in every result would waste tokens. (Dave, 2026-10-20)
+- **The wiki root's absolute path is given to the agent once, in the server's instructions**, not in every file reference. (Dave, 2026-10-20)
+  - The binary always includes it.
+  - Used as a library, it is included too, for now. The host should eventually decide; that is addressed as part of hosted mode. "Hosted mode for custom applications will require cooperation." (Dave, 2026-10-20)
+  [OPEN: deferred — a hosted vs local mode for the built-in binary.]
   [OPEN: Dave's proposal — a tool that converts `file:line` to a URL.]
 - **Results are mostly formatted text**, which is smaller and which the agent reads fine; JSON where it's useful. (Dave, 2026-10-20)
 - **No MCP sessions until something needs them.** (Dave, 2026-10-20)
@@ -507,7 +511,7 @@ agent_wiki serves an MCP server so agents can work with the wiki. (Dave, 2026-10
 - **Important:** the agent can see what the user has open in the web UI.
 - **The browser side is part of the feature set**: the state push, the open-files tool, and the copy button. It doesn't have to be in before testing starts. (Dave, 2026-10-20)
 - **Only for the local case**, for now. "The hosted version will need a different solution that we can figure out later." (Dave, 2026-10-20)
-  [OPEN: deferred — the hosted version.]
+  [OPEN: deferred — the hosted version. It needs a different design, with some kind of auth, which lets us track per-user state. Dave (2026-10-20): "a problem for another day."]
 - **Nice to have: a one-click copy-to-pasteboard button** that captures the current page in a way the agent can follow. (Dave, 2026-10-20)
   It copies the page's path relative to the wiki root. (Dave, 2026-10-20)
 - **The client pushes its state to a new endpoint as it changes:** focus and selection, with other fields added over time. Not a live socket. (Dave, 2026-10-20)

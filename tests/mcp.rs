@@ -173,6 +173,12 @@ async fn over_http() {
     )
     .await;
     assert_eq!(init["result"]["serverInfo"]["name"], "agent_wiki", "{init}");
+    let root = dir.path().canonicalize().unwrap();
+    let instructions = init["result"]["instructions"].as_str().unwrap();
+    assert!(
+        instructions.contains(&format!("The wiki root is `{}`", root.display())),
+        "{instructions}"
+    );
 
     let list = rpc(
         &app,

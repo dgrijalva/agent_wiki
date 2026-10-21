@@ -78,13 +78,14 @@ impl<P: Host> Wiki<P> {
 /// The server the router mounts: the default tools.
 pub(crate) struct Server<P: Host> {
     tools: ToolRouter<Server<P>>,
+    instructions: Arc<str>,
 }
 
 impl<P: Host> ServerHandler for Server<P> {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("agent_wiki", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(&*self.instructions)
     }
 
     async fn list_tools(
@@ -110,8 +111,17 @@ impl<P: Host> ServerHandler for Server<P> {
     }
 }
 
-const INSTRUCTIONS: &str = "A wiki of markdown files. Paths in results are relative to the \
-wiki root. Use `search` to find documents, and `overview` to see a document's outline (with \
+/// What the agent is told once, on connecting: how to use the tools, and
+/// where the wiki root is, since results give paths relative to it.
+fn instructions(root: &std::path::Path) -> String {
+    format!(
+        "A wiki of markdown files. The wiki root is `{}`; paths in results are relative to it. \
+         {USAGE}",
+        root.display()
+    )
+}
+
+const USAGE: &str = "Use `search` to find documents, and `overview` to see a document's outline (with \
 line numbers) before reading the part you need. Use `open_files` to see what the user has \
 open in the wiki's web view, and what they have selected.";
 
@@ -122,10 +132,12 @@ pub(crate) fn service<P: Host>(
     let config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
         .with_json_response(true);
+    let instructions: Arc<str> = instructions(&wiki.inner.root).into();
     StreamableHttpService::new(
         move || {
             Ok(Server {
                 tools: wiki.tools(),
+                instructions: instructions.clone(),
             })
         },
         Arc::new(NeverSessionManager::default()),
