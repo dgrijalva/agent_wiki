@@ -136,6 +136,80 @@ impl<K> Parsed<K> {
     }
 }
 
+/// A node of a parsed document, for reading: its kind and its place in the
+/// tree.
+pub struct NodeRef<'a, P: Host> {
+    tree: &'a Tree<P>,
+    id: NodeId,
+}
+
+// Derived `Clone` and `Copy` would require `P: Clone`.
+impl<P: Host> Clone for NodeRef<'_, P> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<P: Host> Copy for NodeRef<'_, P> {}
+
+/// What a node is: a block or an inline kind.
+pub enum KindRef<'a, P: Host> {
+    Block(&'a BlockKind<P>),
+    Inline(&'a InlineKind<P>),
+}
+
+impl<'a, P: Host> NodeRef<'a, P> {
+    pub(crate) fn new(tree: &'a Tree<P>, id: NodeId) -> Self {
+        NodeRef { tree, id }
+    }
+
+    pub fn kind(&self) -> KindRef<'a, P> {
+        match self.tree.arena[self.id].get() {
+            Node::Block(kind) => KindRef::Block(kind),
+            Node::Inline(kind) => KindRef::Inline(kind),
+        }
+    }
+
+    pub fn children(&self) -> impl Iterator<Item = NodeRef<'a, P>> + use<'a, P> {
+        let tree = self.tree;
+        self.id
+            .children(&tree.arena)
+            .map(move |id| NodeRef::new(tree, id))
+    }
+
+    /// This node, then every node inside it, depth first in document order.
+    pub fn descendants(&self) -> impl Iterator<Item = NodeRef<'a, P>> + use<'a, P> {
+        let tree = self.tree;
+        self.id
+            .descendants(&tree.arena)
+            .map(move |id| NodeRef::new(tree, id))
+    }
+
+    pub fn parent(&self) -> Option<NodeRef<'a, P>> {
+        let id = self.tree.arena[self.id].parent()?;
+        Some(NodeRef::new(self.tree, id))
+    }
+
+    pub fn next_sibling(&self) -> Option<NodeRef<'a, P>> {
+        let id = self.tree.arena[self.id].next_sibling()?;
+        Some(NodeRef::new(self.tree, id))
+    }
+
+    /// The line a block starts on in the source file, 1-based, counting
+    /// frontmatter; `None` for inlines and for blocks a host built inside
+    /// its claim.
+    pub fn line(&self) -> Option<usize> {
+        self.tree.lines.get(&self.id).copied()
+    }
+
+    /// The plain text inside the node, as the outline reads a heading.
+    pub fn text(&self) -> String {
+        let mut text = String::new();
+        crate::document::plain_text(self.tree, self.id, &mut text);
+        text
+    }
+}
+
 /// An arena entry: one block or inline node.
 pub(crate) enum Node<P: Host> {
     Block(BlockKind<P>),

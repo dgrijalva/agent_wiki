@@ -1237,7 +1237,7 @@ mod tests {
     use nom::sequence::preceded;
 
     use super::*;
-    use crate::draw::{DrawChildren, DrawCtx, DrawCx, Element, draw_blocks};
+    use crate::draw::{DrawCtx, DrawCx, Element, draw_blocks};
     use crate::parse::{Never, Plain, parse};
     use crate::template::DefaultTemplate;
     use crate::tree::Parsed;
@@ -1536,10 +1536,12 @@ mod tests {
     }
 
     impl Element<TestHost> for TestBlock {
-        fn draw(&self, _: &DrawCtx<'_>, children: DrawChildren<'_, TestHost>) -> Markup {
+        fn draw(&self, cx: &DrawCtx<'_, TestHost>) -> Markup {
             match self {
-                TestBlock::Banner => html! { header { (children) } "\n" },
-                TestBlock::Callout(kind) => html! { aside class=(kind) { "\n" (children) } "\n" },
+                TestBlock::Banner => html! { header { (cx.draw_children()) } "\n" },
+                TestBlock::Callout(kind) => {
+                    html! { aside class=(kind) { "\n" (cx.draw_children()) } "\n" }
+                }
                 TestBlock::Task { done, text } => html! { p.task.done[*done] { (text) } "\n" },
             }
         }
@@ -1647,8 +1649,8 @@ mod tests {
     struct Nest;
 
     impl Element<NestHost> for Nest {
-        fn draw(&self, _: &DrawCtx<'_>, children: DrawChildren<'_, NestHost>) -> Markup {
-            html! { section { "\n" (children) } "\n" }
+        fn draw(&self, cx: &DrawCtx<'_, NestHost>) -> Markup {
+            html! { section { "\n" (cx.draw_children()) } "\n" }
         }
     }
 

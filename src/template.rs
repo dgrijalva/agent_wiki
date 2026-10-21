@@ -8,8 +8,9 @@ use axum::http::request::Parts;
 use maud::{Markup, html};
 use serde_json::Value;
 
-use crate::draw::tag_href;
-use crate::names::folder_url;
+use crate::Wiki;
+use crate::components::{Breadcrumbs, CopyPath, FrontmatterTable, SearchBox, TagLinks};
+use crate::draw::{DrawCtx, Element};
 use crate::parse::Host;
 
 /// A host's page template, the host's `P::Template`. Impls write `async fn`.
@@ -18,10 +19,13 @@ pub trait Template<P: Host>: Send + Sync + 'static {
     /// `set_title(…)` and `suppress_default_styles()`.
     fn head(&self, ctx: &mut HeadCtx<'_, P>) -> impl Future<Output = Markup> + Send;
 
-    /// The contents of the htmx root. Must embed `content(ctx)`. A template
-    /// that doesn't use the default layout places the built-in chrome itself
-    /// (`ctx.search_box()`, `ctx.breadcrumbs()`, `ctx.copy_path()`,
-    /// `ctx.tags()`, `ctx.frontmatter_table()`).
+    /// The contents of the htmx root, normally embedding `content(ctx)`, the
+    /// page's body. A template can draw its own body instead, from
+    /// `ctx.kind()` and the data in `ctx.wiki()`, out of the library's
+    /// components or its own. A template that doesn't use the default
+    /// layout places the built-in chrome itself (`ctx.search_box()`,
+    /// `ctx.breadcrumbs()`, `ctx.copy_path()`, `ctx.tags()`,
+    /// `ctx.frontmatter_table()`).
     fn body(
         &self,
         ctx: &BodyCtx<'_, P>,
@@ -33,14 +37,25 @@ pub trait Template<P: Host>: Send + Sync + 'static {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PageKind {
     Document(DocumentMeta),
-    FolderIndex,
+    /// The folder's path from the root; `""` for the root.
+    FolderIndex {
+        path: String,
+    },
     /// `query` as typed, which the search box shows.
     Search {
         query: String,
     },
-    Tag,
-    Disambiguation,
+    /// The tag, lowercase.
+    Tag {
+        tag: String,
+    },
+    /// The wikilink target as written.
+    Disambiguation {
+        target: String,
+    },
     NotFound,
+    /// A host's own page, from [`Wiki::custom_page`](crate::Wiki::custom_page).
+    Custom,
 }
 
 /// A document page's metadata.
@@ -157,6 +172,7 @@ impl<'a, P: Host> HeadCtx<'a, P> {
 
 /// What the body hook sees, with the built-in chrome to place.
 pub struct BodyCtx<'a, P: Host> {
+    wiki: &'a Wiki<P>,
     kind: &'a PageKind,
     request: &'a Parts,
     /// Base path without trailing slash (`""` at root).
@@ -164,23 +180,27 @@ pub struct BodyCtx<'a, P: Host> {
     /// The folder the breadcrumbs lead down to (`""` for the root alone), or
     /// `None` for no breadcrumbs.
     crumbs: Option<&'a str>,
-    host: PhantomData<fn() -> P>,
 }
 
 impl<'a, P: Host> BodyCtx<'a, P> {
     pub(crate) fn new(
+        wiki: &'a Wiki<P>,
         kind: &'a PageKind,
         request: &'a Parts,
-        base: &'a str,
         crumbs: Option<&'a str>,
     ) -> Self {
         BodyCtx {
+            wiki,
             kind,
             request,
-            base,
+            base: &wiki.inner.base,
             crumbs,
-            host: PhantomData,
         }
+    }
+
+    /// The wiki, for the data a template draws its own page body from.
+    pub fn wiki(&self) -> &Wiki<P> {
+        self.wiki
     }
 
     pub fn kind(&self) -> &PageKind {
@@ -197,123 +217,55 @@ impl<'a, P: Host> BodyCtx<'a, P> {
         self.base
     }
 
+    /// Draws an element that isn't in a tree, such as a page component.
+    pub fn draw(&self, element: &impl Element<P>) -> Markup {
+        element.draw(&DrawCtx::detached(self.base))
+    }
+
     /// The search form, holding the query on a search page.
     pub fn search_box(&self) -> Markup {
         let query = match self.kind {
             PageKind::Search { query } => query.as_str(),
             _ => "",
         };
-        html! {
-            form role="search" action={ (self.base) "/_wiki/search" } method="get" {
-                input type="search" name="q" placeholder="Search" value=(query);
-            }
-        }
+        self.draw(&SearchBox::new(query))
     }
 
     /// Links to the root and each folder down to the page's; empty when the
     /// page has none.
     pub fn breadcrumbs(&self) -> Markup {
-        let Some(folder) = self.crumbs else {
-            return html! {};
-        };
-        let base = self.base;
-        let mut path = String::new();
-        let mut trail = Vec::new();
-        for segment in folder.split('/').filter(|s| !s.is_empty()) {
-            if !path.is_empty() {
-                path.push('/');
-            }
-            path.push_str(segment);
-            trail.push((format!("{base}{}", folder_url(&path)), segment));
-        }
-        html! {
-            nav {
-                a href={ (base) "/" } { "Index" }
-                @for (href, name) in &trail {
-                    " / " a href=(href) { (name) }
-                }
-            }
+        match self.crumbs {
+            Some(folder) => self.draw(&Breadcrumbs::new(folder)),
+            None => html! {},
         }
     }
 
     /// The document's tag links; empty on other pages and untagged documents.
     pub fn tags(&self) -> Markup {
-        let tags = match self.kind {
-            PageKind::Document(meta) => meta.tags(),
-            _ => &[],
-        };
-        if tags.is_empty() {
-            return html! {};
-        }
-        html! {
-            p.tags {
-                @for (i, tag) in tags.iter().enumerate() {
-                    @if i > 0 { " " }
-                    a.tag href=(tag_href(self.base, tag)) { "#" (tag) }
-                }
-            }
+        match self.kind {
+            PageKind::Document(meta) => self.draw(&TagLinks::new(meta.tags().to_vec())),
+            _ => html! {},
         }
     }
 
     /// A button that copies the document's path from the wiki root, for
     /// pasting to an agent; empty on other pages.
     pub fn copy_path(&self) -> Markup {
-        let PageKind::Document(meta) = self.kind else {
-            return html! {};
-        };
-        html! {
-            button.copy-path type="button" data-path=(meta.path()) title={ "Copy " (meta.path()) } {
-                "Copy path"
-            }
+        match self.kind {
+            PageKind::Document(meta) => self.draw(&CopyPath::new(meta.path())),
+            _ => html! {},
         }
     }
 
     /// The document's frontmatter as a collapsed table; empty when there is
     /// none.
     pub fn frontmatter_table(&self) -> Markup {
-        let PageKind::Document(meta) = self.kind else {
-            return html! {};
-        };
-        let Some(Value::Object(map)) = meta.frontmatter() else {
-            return html! {};
-        };
-        html! {
-            details {
-                summary { "Properties" }
-                table {
-                    @for (key, value) in map {
-                        tr { th { (key) } td { (value_html(value)) } }
-                    }
-                }
+        match self.kind {
+            PageKind::Document(meta) => {
+                self.draw(&FrontmatterTable::new(meta.frontmatter().cloned()))
             }
+            _ => html! {},
         }
-    }
-}
-
-/// A scalar as text, a list of scalars joined with commas, anything else as
-/// YAML in `<code>`.
-fn value_html(value: &Value) -> Markup {
-    if let Some(text) = scalar_text(value) {
-        return html! { (text) };
-    }
-    if let Value::Array(items) = value
-        && let Some(texts) = items.iter().map(scalar_text).collect::<Option<Vec<_>>>()
-    {
-        return html! { (texts.join(", ")) };
-    }
-    let yaml = serde_norway::to_string(value)
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-    html! { code { (yaml) } }
-}
-
-fn scalar_text(value: &Value) -> Option<String> {
-    match value {
-        Value::Null => Some(String::new()),
-        Value::Bool(b) => Some(b.to_string()),
-        Value::Number(n) => Some(n.to_string()),
-        Value::String(s) => Some(s.clone()),
-        Value::Array(_) | Value::Object(_) => None,
     }
 }
 
@@ -370,7 +322,13 @@ mod tests {
             Some(frontmatter),
             vec!["a".to_string(), "b".to_string()],
         ));
-        let ctx = BodyCtx::<Plain>::new(&kind, &request, "/b", Some("Projects/Alpha"));
+        let dir = tempfile::tempdir().unwrap();
+        let wiki = crate::Wiki::builder(dir.path())
+            .base_path("/b")
+            .build()
+            .await
+            .unwrap();
+        let ctx = BodyCtx::<Plain>::new(&wiki, &kind, &request, Some("Projects/Alpha"));
         let content = |_: &BodyCtx<'_, Plain>| html! { p { "body" } };
         let html = DefaultTemplate.body(&ctx, &content).await.into_string();
         assert_eq!(
@@ -393,7 +351,8 @@ mod tests {
         let kind = PageKind::Search {
             query: "q\"".to_string(),
         };
-        let ctx = BodyCtx::<Plain>::new(&kind, &request, "", None);
+        let root = crate::Wiki::builder(dir.path()).build().await.unwrap();
+        let ctx = BodyCtx::<Plain>::new(&root, &kind, &request, None);
         let html = DefaultTemplate.body(&ctx, &content).await.into_string();
         assert_eq!(
             html,

@@ -8,9 +8,11 @@ use serde_json::Value;
 
 use crate::draw::Element;
 use crate::parse::Host;
-use crate::tree::{BlockKind, Children, InlineKind, Node, Tree};
+use crate::tree::{BlockKind, Children, InlineKind, Node, NodeRef, Tree};
 
-pub(crate) struct Document<P: Host> {
+/// A parsed document: its frontmatter and the tree of its body. Read-only;
+/// what hosts walk to extract records.
+pub struct DocumentTree<P: Host> {
     /// `None` when absent or not well formed.
     pub(crate) frontmatter: Option<Value>,
     pub(crate) tree: Tree<P>,
@@ -50,13 +52,13 @@ pub(crate) struct Extracted {
 
 /// A heading as the outline lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OutlineHeading {
-    pub(crate) level: u8,
-    pub(crate) text: String,
-    /// The heading's id on the page, as in [`Extracted::headings`].
-    pub(crate) anchor: String,
+pub struct OutlineHeading {
+    pub level: u8,
+    pub text: String,
+    /// The heading's id on the page.
+    pub anchor: String,
     /// The line it starts on; `None` for a heading a host built.
-    pub(crate) line: Option<usize>,
+    pub line: Option<usize>,
 }
 
 impl Extracted {
@@ -87,7 +89,23 @@ impl Extracted {
 /// The longest summary, in characters, before the `…`.
 const SUMMARY_CHARS: usize = 280;
 
-impl<P: Host> Document<P> {
+impl<P: Host> DocumentTree<P> {
+    /// `None` when the document has no frontmatter, or it isn't well formed.
+    pub fn frontmatter(&self) -> Option<&Value> {
+        self.frontmatter.as_ref()
+    }
+
+    /// The top-level blocks, in order.
+    pub fn blocks(&self) -> impl Iterator<Item = NodeRef<'_, P>> {
+        self.body.ids.iter().map(|&id| NodeRef::new(&self.tree, id))
+    }
+
+    /// Every node of the body, depth first in document order: each block,
+    /// then its contents.
+    pub fn nodes(&self) -> impl Iterator<Item = NodeRef<'_, P>> {
+        self.blocks().flat_map(|block| block.descendants())
+    }
+
     /// One walk of the body. Nodes left in the arena but never attached
     /// (from a host hook that returned `None`, or a failed bracket) are not
     /// reached.
@@ -265,7 +283,7 @@ fn reserved(id: &str) -> bool {
 }
 
 /// The text of `id`'s descendants, as a heading's title.
-fn plain_text<P: Host>(tree: &Tree<P>, id: NodeId, out: &mut String) {
+pub(crate) fn plain_text<P: Host>(tree: &Tree<P>, id: NodeId, out: &mut String) {
     for child in id.descendants(&tree.arena).skip(1) {
         if let Node::Inline(kind) = tree.arena[child].get() {
             match kind {
@@ -298,7 +316,7 @@ mod tests {
     use nom::sequence::{delimited, preceded};
 
     use super::*;
-    use crate::draw::{DrawChildren, DrawCtx, DrawCx, draw_blocks};
+    use crate::draw::{DrawCtx, DrawCx, draw_blocks};
     use crate::parse::{BlockStream, InlineStream, Plain, parse};
     use crate::template::DefaultTemplate;
     use crate::tree::{Content, Parsed};
@@ -535,8 +553,8 @@ mod tests {
     }
 
     impl Element<TestHost> for TestInline {
-        fn draw(&self, _: &DrawCtx<'_>, children: DrawChildren<'_, TestHost>) -> Markup {
-            html! { span { (children) } }
+        fn draw(&self, cx: &DrawCtx<'_, TestHost>) -> Markup {
+            html! { span { (cx.draw_children()) } }
         }
 
         fn text(&self) -> Option<String> {
@@ -549,8 +567,8 @@ mod tests {
     }
 
     impl Element<TestHost> for TestBlock {
-        fn draw(&self, _: &DrawCtx<'_>, children: DrawChildren<'_, TestHost>) -> Markup {
-            html! { header { (children) } }
+        fn draw(&self, cx: &DrawCtx<'_, TestHost>) -> Markup {
+            html! { header { (cx.draw_children()) } }
         }
     }
 

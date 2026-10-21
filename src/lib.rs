@@ -1,28 +1,45 @@
+mod components;
+mod data;
 mod document;
 mod draw;
+mod entity;
 mod index;
 mod links;
 mod mcp;
 mod names;
 mod parse;
+mod signals;
 mod tabs;
 mod template;
 mod tree;
 mod watch;
 mod web;
 
+// The derive's generated code names `::agent_wiki`, here too.
+extern crate self as agent_wiki;
+
+pub use agent_wiki_derive::Entity;
 pub use maud;
 pub use nom;
 pub use rmcp;
 
+pub use crate::components::{
+    Breadcrumbs, Contents, CopyPath, DisambiguationBody, FolderIndexBody, FrontmatterTable,
+    NotFoundBody, RecentlyEdited, SearchBody, SearchBox, TagBody, TagCloud, TagLinks,
+};
+pub use crate::data::{Document, DocumentBody, Entry, Folder, LinkPage, SearchOpts, Walk};
+pub use crate::document::{DocumentTree, OutlineHeading};
 pub use crate::draw::{DrawChildren, DrawCtx, Element};
+pub use crate::entity::{Entity, EntityField, Field, FieldKind, FieldValue, Records};
 pub use crate::mcp::{
     OpenFiles, OpenFilesArgs, Overview, OverviewArgs, PageUrl, PageUrlArgs, Search, SearchArgs,
     Tool, route,
 };
 pub use crate::parse::{BlockStream, Host, InlineStream, Never, Plain};
+pub use crate::signals::DocumentChange;
 pub use crate::template::{BodyCtx, DefaultTemplate, DocumentMeta, HeadCtx, PageKind, Template};
-pub use crate::tree::{Align, BlockKind, Children, Content, InlineKind, Parsed};
+pub use crate::tree::{Align, BlockKind, Children, Content, InlineKind, KindRef, NodeRef, Parsed};
+pub use crate::web::CustomPage;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,10 +49,6 @@ use notify::RecommendedWatcher;
 use notify_debouncer_mini::Debouncer;
 
 use crate::index::Index;
-
-/// How many changed-page notices the live-update channel buffers per
-/// subscriber before it lags.
-const CHANGED_CAPACITY: usize = 1024;
 
 /// Where a [`Wiki`] keeps its index; see [`WikiBuilder::index_storage`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -78,12 +91,8 @@ struct Inner<P: Host> {
     _watcher: Debouncer<RecommendedWatcher>,
     /// Becomes `true` once the initial background scan has finished.
     indexed: tokio::sync::watch::Receiver<bool>,
-    /// The rel of every page the watcher reindexed or removed, after each
-    /// batch. The watcher task holds the other sender, so subscribers'
-    /// streams end only once this `Inner` (every `Wiki` and router clone) and
-    /// the watcher are both gone. A served SSE connection keeps a router
-    /// clone, so it is never ended from this side; see `web::page_events`.
-    changed: tokio::sync::broadcast::Sender<Arc<str>>,
+    /// Watches on documents and folders, and the open pages' channels.
+    signals: Arc<signals::Signals>,
     /// The document pages open in browsers, for the `open_files` tool.
     tabs: tabs::Tabs,
 }
@@ -99,6 +108,7 @@ impl Wiki {
             index_storage: IndexStorage::default(),
             host: Plain,
             template: DefaultTemplate,
+            entities: Vec::new(),
         }
     }
 }
@@ -113,6 +123,22 @@ impl<P: Host> Wiki<P> {
     /// Resolves once the initial background scan has finished; at once if it
     /// already has. Pages are served before then, but links, tags and
     /// listings may be incomplete.
+    /// Signals every open instance of the page at URL path `path` (e.g.
+    /// `/docs/Projects/Alpha`, or a host's own `/dashboard`) to refetch
+    /// itself; nothing if none is open. Only the path is the key.
+    pub fn signal(&self, path: &str) {
+        self.inner.signals.signal(path);
+    }
+
+    /// Rebuilds the index from scratch: drops every stored row and table,
+    /// then rescans every file. Resolves once the rescan has finished;
+    /// pages are served meanwhile, from an index that is filling.
+    pub async fn reindex(&self) -> anyhow::Result<()> {
+        let index = &self.inner.index;
+        index.reset(&self.inner.root).await?;
+        index.scan(&self.inner.root).await
+    }
+
     pub async fn indexed(&self) {
         let mut indexed = self.inner.indexed.clone();
         // An error means the scan task is gone, which only happens after it
@@ -129,6 +155,8 @@ pub struct WikiBuilder<P: Host = Plain> {
     index_storage: IndexStorage,
     host: P,
     template: P::Template,
+    /// Registered entity types; an invalid one fails `build`.
+    entities: Vec<anyhow::Result<entity::EntitySpec>>,
 }
 
 impl<P: Host> WikiBuilder<P> {
@@ -142,7 +170,16 @@ impl<P: Host> WikiBuilder<P> {
             index_storage: self.index_storage,
             host,
             template,
+            entities: self.entities,
         }
+    }
+
+    /// Registers an entity type: the index keeps a table of its records,
+    /// which the host's [`Host::extract`] pushes. Registering one twice, or
+    /// two with the same name, fails `build`.
+    pub fn entity<T: Entity>(mut self) -> Self {
+        self.entities.push(entity::EntitySpec::of::<T>());
+        self
     }
 
     /// Where the router is mounted: `"/"` (the default) for the root, e.g. `"/docs"` otherwise.
@@ -173,9 +210,19 @@ impl<P: Host> WikiBuilder<P> {
         let root = self.root.canonicalize()?;
         std::fs::read_dir(&root)?;
         let host = Arc::new(self.host);
-        let index = Index::open(&self.index_storage, &root, host.clone()).await?;
-        let (changed, _) = tokio::sync::broadcast::channel(CHANGED_CAPACITY);
-        let watcher = watch::start(root.clone(), index.clone(), changed.clone())?;
+        let entities = self
+            .entities
+            .into_iter()
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        for (i, spec) in entities.iter().enumerate() {
+            if entities[..i].iter().any(|other| other.name == spec.name) {
+                anyhow::bail!("entity {} is registered twice", spec.name);
+            }
+        }
+        let index = Index::open_with(&self.index_storage, &root, host.clone(), entities).await?;
+        let base = normalize_base(&self.base_path);
+        let signals = Arc::new(signals::Signals::new(base.clone()));
+        let watcher = watch::start(root.clone(), index.clone(), signals.clone())?;
         let (done, indexed) = tokio::sync::watch::channel(false);
         tokio::spawn({
             let (root, index) = (root.clone(), index.clone());
@@ -189,14 +236,14 @@ impl<P: Host> WikiBuilder<P> {
         Ok(Wiki {
             inner: Arc::new(Inner {
                 root,
-                base: normalize_base(&self.base_path),
+                base,
                 host,
                 template: self.template,
                 index,
                 stylesheet: self.stylesheet,
                 _watcher: watcher,
                 indexed,
-                changed,
+                signals,
                 tabs: tabs::Tabs::new(),
             }),
         })

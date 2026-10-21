@@ -10,15 +10,29 @@ use libsql::{Builder, Connection, Row, Rows, TransactionBehavior, params};
 use tokio::sync::Mutex;
 
 use crate::IndexStorage;
+use crate::entity::{EntitySpec, FieldValue, Records};
 use crate::names::{FileKeys, LinkTarget, norm, path_to_url};
 use crate::parse::{Host, parse};
 
-/// The version of what an index stores. Bump it by hand whenever the schema
-/// changes, or anything a stored row holds or means: tables, columns, the
-/// FTS5 tokenizer (`unicode61 remove_diacritics 2`), key normalisation,
-/// title rules, or what `Document::extract` collects. An index file with a
-/// different stored version (`PRAGMA user_version`) is rebuilt.
+/// The version of what stored rows mean. Changes to [`SCHEMA`] are caught by
+/// [`schema_version`] on their own; bump this by hand whenever anything a
+/// stored row holds or means changes without the schema changing: key
+/// normalisation, title or summary rules, or what `Document::extract`
+/// collects.
 pub const INDEX_VERSION: i64 = 3;
+
+/// The version an index file stores (`PRAGMA user_version`): a hash of
+/// [`SCHEMA`] and [`INDEX_VERSION`], so a file holding another is rebuilt.
+pub fn schema_version() -> i64 {
+    (fnv1a(&format!("{INDEX_VERSION}\n{SCHEMA}")) & 0x7fff_ffff) as i64
+}
+
+/// 64-bit FNV-1a: a hash that is the same in every build, unlike std's.
+pub(crate) fn fnv1a(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
 
 /// `PRAGMA application_id` of an agent_wiki index file: ASCII `awik`. A
 /// SQLite file with another id that holds any schema object is refused.
@@ -32,7 +46,9 @@ pub const AGENT_WIKI_APP_ID: i32 = 0x6177_696B;
 /// this across restarts); `summary` is the page's summary, `''` for none.
 /// A `wikilink` row is one counted wikilink, keyed by its ordinal; a `tag`
 /// row is one distinct lowercase tag of a page, holding its first inline
-/// ordinal, or NULL when it is only in frontmatter. `page_fts` indexes `page`'s title and body as external
+/// ordinal, or NULL when it is only in frontmatter. An `entity_version` row
+/// is a registered entity type's stored version (`EntitySpec::version`); its
+/// tables are `entity_{name}` and, with full-text fields, `entity_{name}_fts`. `page_fts` indexes `page`'s title and body as external
 /// content, kept current by the triggers.
 const SCHEMA: &str = "
 CREATE TABLE meta (root TEXT NOT NULL);
@@ -59,6 +75,7 @@ CREATE INDEX wikilink_key ON wikilink(key);
 CREATE TABLE tag (source TEXT NOT NULL, tag TEXT NOT NULL, ordinal INTEGER,
     PRIMARY KEY (source, tag)) WITHOUT ROWID;
 CREATE INDEX tag_tag ON tag(tag);
+CREATE TABLE entity_version (name TEXT PRIMARY KEY, version INTEGER NOT NULL) WITHOUT ROWID;
 CREATE VIRTUAL TABLE page_fts USING fts5(title, body, content='page', content_rowid='id',
     tokenize='unicode61 remove_diacritics 2');
 CREATE TRIGGER page_ai AFTER INSERT ON page BEGIN
@@ -104,13 +121,6 @@ const MTIMES_IN: &str = "SELECT path, mtime FROM page WHERE path >= ?1 AND path 
 
 /// `folder_listing`'s pages directly in folder `?1`.
 const LISTING_PAGES: &str = "SELECT path, url, folder, title FROM page WHERE folder = ?1";
-
-/// `listing_details`' pages directly in folder `?1`.
-const LISTING_DETAILS: &str = "SELECT path, summary, edited FROM page WHERE folder = ?1";
-
-/// `listing_details`' tags of pages directly in folder `?1`, sorted.
-const LISTING_TAGS: &str = "SELECT t.source, t.tag FROM tag t JOIN page p ON p.path = t.source
-     WHERE p.folder = ?1 ORDER BY t.source, t.tag";
 
 /// `folder_listing`'s deeper folders of a non-root folder `?3`, whose
 /// subtree is `[?1, ?2)`.
@@ -235,6 +245,12 @@ async fn texts(conn: &Connection, sql: &str) -> Result<Vec<String>> {
 /// `host`'s hooks.
 pub struct Index<P: Host> {
     conn: Arc<Mutex<Connection>>,
+    /// The host's registered entity types.
+    entities: Arc<Vec<EntitySpec>>,
+    /// Entity types whose tables were (re)created since the last scan, so
+    /// the next scan extracts them from every file, even one it otherwise
+    /// skips.
+    stale: Arc<std::sync::Mutex<BTreeSet<&'static str>>>,
     host: Arc<P>,
 }
 
@@ -243,6 +259,8 @@ impl<P: Host> Clone for Index<P> {
     fn clone(&self) -> Self {
         Index {
             conn: self.conn.clone(),
+            entities: self.entities.clone(),
+            stale: self.stale.clone(),
             host: self.host.clone(),
         }
     }
@@ -260,15 +278,30 @@ impl<P: Host> Index<P> {
     /// `journal_mode=WAL` and `synchronous=NORMAL` are set and the file is
     /// locked by `BEGIN IMMEDIATE`, so a second opener (in any process)
     /// fails. In that transaction the foreign check is repeated, and a
-    /// stored index is kept only if it holds [`INDEX_VERSION`] and `root`;
+    /// stored index is kept only if it holds [`schema_version`] and `root`;
     /// otherwise it is rebuilt. `FilePath` errors are prefixed
     /// `opening index at {path}`.
+    #[cfg(test)]
     pub async fn open(storage: &IndexStorage, root: &Path, host: Arc<P>) -> Result<Index<P>> {
+        Index::open_with(storage, root, host, Vec::new()).await
+    }
+
+    /// `open`, with the host's entity types: a type whose stored version
+    /// differs, or that has no tables yet, gets new tables and is marked
+    /// stale for the next scan; the tables of a type no longer registered
+    /// are dropped.
+    pub async fn open_with(
+        storage: &IndexStorage,
+        root: &Path,
+        host: Arc<P>,
+        entities: Vec<EntitySpec>,
+    ) -> Result<Index<P>> {
         let root = root.to_string_lossy();
+        let entities = Arc::new(entities);
         match storage {
             IndexStorage::InMemory => {
                 let conn = Builder::new_local(":memory:").build().await?.connect()?;
-                Index::prepare(conn, &root, host).await
+                Index::prepare(conn, &root, host, entities).await
             }
             IndexStorage::FilePath(path) => async {
                 // Absolute, so SQLite always gets a filesystem path: a name
@@ -296,7 +329,7 @@ impl<P: Host> Index<P> {
                 let journal = conn.query("PRAGMA journal_mode = WAL", ()).await?;
                 collect(journal, |_| Ok(())).await?;
                 conn.execute("PRAGMA synchronous = NORMAL", ()).await?;
-                Index::prepare(conn, &root, host).await
+                Index::prepare(conn, &root, host, entities).await
             }
             .await
             .with_context(|| format!("opening index at {}", path.display())),
@@ -305,23 +338,48 @@ impl<P: Host> Index<P> {
 
     /// Takes the write lock, refuses a foreign database, and keeps the
     /// stored rows or rebuilds, all in one transaction.
-    async fn prepare(conn: Connection, root: &str, host: Arc<P>) -> Result<Index<P>> {
+    async fn prepare(
+        conn: Connection,
+        root: &str,
+        host: Arc<P>,
+        entities: Arc<Vec<EntitySpec>>,
+    ) -> Result<Index<P>> {
+        // Entity records go with their page. Outside the transaction: the
+        // pragma does nothing inside one.
+        conn.execute("PRAGMA foreign_keys = ON", ()).await?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .await?;
         let ours = refuse_foreign(&tx).await?;
         let version = first_i64(&tx, "PRAGMA user_version", ()).await?;
         let current = ours
-            && version == Some(INDEX_VERSION)
+            && version == Some(schema_version())
             && stored_root(&tx).await? == Some(root.to_string());
         if !current {
             rebuild(&tx, root).await?;
         }
+        let stale = sync_entities(&tx, &entities).await?;
         tx.commit().await?;
         Ok(Index {
             conn: Arc::new(Mutex::new(conn)),
+            entities,
+            stale: Arc::new(std::sync::Mutex::new(stale)),
             host,
         })
+    }
+
+    /// Drops every stored row and table and creates the schema afresh; the
+    /// next [`scan`](Index::scan) refills it.
+    pub async fn reset(&self, root: &Path) -> Result<()> {
+        let conn = self.conn.lock().await;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .await?;
+        rebuild(&tx, &root.to_string_lossy()).await?;
+        let stale = sync_entities(&tx, &self.entities).await?;
+        tx.commit().await?;
+        *self.stale.lock().unwrap() = stale;
+        Ok(())
     }
 
     /// Reconciles the index with every `.md` file under `root`, skipping
@@ -341,8 +399,14 @@ impl<P: Host> Index<P> {
         let started = mtime_of(std::time::SystemTime::now());
         let committed = git_edited_times(root).await;
         let mut stored = self.mtimes_under("").await?;
+        let stale = std::mem::take(&mut *self.stale.lock().unwrap());
         for (rel, mtime) in collect_pages(root, "").await? {
             if stored.remove(&rel) == Some(mtime) {
+                if !stale.is_empty()
+                    && let Err(e) = self.write_entities(root, &rel, &stale).await
+                {
+                    eprintln!("agent_wiki: skipping {}: {e:#}", root.join(&rel).display());
+                }
                 continue;
             }
             let scan = Scan {
@@ -399,7 +463,7 @@ impl<P: Host> Index<P> {
             }) if mtime <= started => committed,
             _ => mtime.div_euclid(1_000_000_000),
         };
-        let (page, links, tags) = rows_for(&*self.host, rel, &source, mtime, edited);
+        let (page, links, tags, records) = rows_for(&*self.host, rel, &source, mtime, edited);
         let conn = self.conn.lock().await;
         let tx = conn.transaction().await?;
         if scan.is_some() {
@@ -448,6 +512,27 @@ impl<P: Host> Index<P> {
             )
             .await?;
         }
+        write_records(&tx, rel, &self.entities, None, records).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Re-extracts only the entity types in `only` from the indexed page at
+    /// `rel`, leaving its other rows alone. Nothing if the page isn't
+    /// indexed.
+    async fn write_entities(
+        &self,
+        root: &Path,
+        rel: &str,
+        only: &BTreeSet<&'static str>,
+    ) -> Result<()> {
+        let source = tokio::fs::read_to_string(root.join(rel)).await?;
+        let tree = parse(&*self.host, &source);
+        let mut records = Records::default();
+        self.host.extract(rel, &tree, &mut records);
+        let conn = self.conn.lock().await;
+        let tx = conn.transaction().await?;
+        write_records(&tx, rel, &self.entities, Some(only), records).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -666,31 +751,6 @@ impl<P: Host> Index<P> {
         Ok((folders, pages))
     }
 
-    /// What the folder listing shows of each page directly in `folder`,
-    /// keyed by path.
-    pub async fn listing_details(&self, folder: &str) -> Result<HashMap<String, PageDetails>> {
-        let conn = self.conn.lock().await;
-        let rows = conn.query(LISTING_DETAILS, [folder]).await?;
-        let mut details: HashMap<String, PageDetails> = collect(rows, |row| {
-            let details = PageDetails {
-                summary: row.get(1)?,
-                edited: row.get(2)?,
-                tags: Vec::new(),
-            };
-            Ok((row.get(0)?, details))
-        })
-        .await?
-        .into_iter()
-        .collect();
-        let rows = conn.query(LISTING_TAGS, [folder]).await?;
-        for (path, tag) in collect(rows, |row| Ok((row.get::<String>(0)?, row.get(1)?))).await? {
-            if let Some(page) = details.get_mut(&path) {
-                page.tags.push(tag);
-            }
-        }
-        Ok(details)
-    }
-
     /// The `n` most recently edited pages in `folder` or below it (`""` is
     /// the root), newest first, ties by path, each with its edited time in
     /// seconds since the epoch.
@@ -742,17 +802,10 @@ impl<P: Host> Index<P> {
     }
 
     /// The page's tags (inline and frontmatter), lowercased, deduped and sorted.
+    #[cfg(test)]
     pub async fn page_tags(&self, rel: &str) -> Result<Vec<String>> {
-        let mut tags: Vec<String> = {
-            let conn = self.conn.lock().await;
-            let rows = conn
-                .query("SELECT tag FROM tag WHERE source = ?1", [rel])
-                .await?;
-            collect(rows, |row| Ok(row.get(0)?)).await?
-        };
-        tags.sort();
-        tags.dedup();
-        Ok(tags)
+        let details = self.details(&[rel.to_string()]).await?.remove(rel);
+        Ok(details.map(|d| d.tags).unwrap_or_default())
     }
 
     /// What the folder listing shows of each page in `paths` that is
@@ -841,11 +894,13 @@ async fn rebuild(conn: &Connection, root: &str) -> Result<()> {
         conn.execute(&format!("DROP TABLE {}", quoted(&name)), ())
             .await?;
     }
-    // Dropping a table drops its indexes and triggers.
+    // Dropping a table drops its indexes and triggers. Entity record tables
+    // go before `page`, which they reference.
     let tables = texts(
         conn,
         "SELECT name FROM sqlite_schema
-         WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+         WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+         ORDER BY name NOT LIKE 'entity\\_%' ESCAPE '\\'",
     )
     .await?;
     for name in tables {
@@ -860,7 +915,7 @@ async fn rebuild(conn: &Connection, root: &str) -> Result<()> {
     conn.execute_batch(SCHEMA).await?;
     conn.execute("INSERT INTO meta (root) VALUES (?1)", [root])
         .await?;
-    conn.execute(&format!("PRAGMA user_version = {INDEX_VERSION}"), ())
+    conn.execute(&format!("PRAGMA user_version = {}", schema_version()), ())
         .await?;
     conn.execute(&format!("PRAGMA application_id = {AGENT_WIKI_APP_ID}"), ())
         .await?;
@@ -883,8 +938,11 @@ fn rows_for<P: Host>(
     source: &str,
     mtime: i64,
     edited: i64,
-) -> (PageRow, Vec<WikilinkRow>, Vec<TagRow>) {
-    let ex = parse(host, source).extract();
+) -> (PageRow, Vec<WikilinkRow>, Vec<TagRow>, Records) {
+    let tree = parse(host, source);
+    let ex = tree.extract();
+    let mut records = Records::default();
+    host.extract(rel, &tree, &mut records);
     let name = rel.rsplit('/').next().unwrap_or(rel);
     let stem = name.strip_suffix(".md").unwrap_or(name);
     let keys = FileKeys::from_rel(rel);
@@ -927,7 +985,116 @@ fn rows_for<P: Host>(
         .filter(|(tag, _)| seen.insert(tag.clone()))
         .map(|(tag, ordinal)| TagRow { tag, ordinal })
         .collect();
-    (page, links, tags)
+    (page, links, tags, records)
+}
+
+/// Replaces the stored records of the page at `rel` with `records`, for
+/// every registered entity type, or only those in `only`. A record of a
+/// type that isn't registered is logged and dropped. Nothing if the page
+/// isn't indexed.
+async fn write_records(
+    conn: &Connection,
+    rel: &str,
+    entities: &[EntitySpec],
+    only: Option<&BTreeSet<&'static str>>,
+    records: Records,
+) -> Result<()> {
+    if entities.is_empty() && records.records.is_empty() {
+        return Ok(());
+    }
+    let Some(page) = first_i64(conn, "SELECT id FROM page WHERE path = ?1", [rel]).await? else {
+        return Ok(());
+    };
+    let wanted = |name: &str| only.is_none_or(|only| only.contains(name));
+    for spec in entities.iter().filter(|spec| wanted(spec.name)) {
+        conn.execute(
+            &format!("DELETE FROM {} WHERE page = ?1", spec.table()),
+            [page],
+        )
+        .await?;
+    }
+    let mut ordinals: HashMap<&str, i64> = HashMap::new();
+    for (name, values) in records.records {
+        let Some(spec) = entities.iter().find(|spec| spec.name == name) else {
+            eprintln!(
+                "agent_wiki: {rel}: a record of entity type {name:?}, which isn't registered"
+            );
+            continue;
+        };
+        if !wanted(name) {
+            continue;
+        }
+        let ordinal = ordinals.entry(name).or_default();
+        let mut params = vec![
+            libsql::Value::Integer(page),
+            libsql::Value::Integer(*ordinal),
+        ];
+        params.extend(values.into_iter().map(|value| match value {
+            FieldValue::Null => libsql::Value::Null,
+            FieldValue::Text(text) => libsql::Value::Text(text),
+            FieldValue::Integer(n) => libsql::Value::Integer(n),
+            FieldValue::Real(x) => libsql::Value::Real(x),
+        }));
+        conn.execute(&spec.insert(), params).await?;
+        *ordinal += 1;
+    }
+    Ok(())
+}
+
+/// Brings the entity tables in line with `entities` in the open
+/// transaction: drops the tables of types no longer registered, and
+/// (re)creates those of each type whose stored version differs. Returns the
+/// names of the types (re)created.
+async fn sync_entities(
+    conn: &Connection,
+    entities: &[EntitySpec],
+) -> Result<BTreeSet<&'static str>> {
+    let rows = conn
+        .query("SELECT name, version FROM entity_version", ())
+        .await?;
+    let stored: HashMap<String, i64> = collect(rows, |row| Ok((row.get(0)?, row.get(1)?)))
+        .await?
+        .into_iter()
+        .collect();
+    for name in stored.keys() {
+        if !entities.iter().any(|spec| spec.name == name) {
+            drop_entity(conn, name).await?;
+            conn.execute(
+                "DELETE FROM entity_version WHERE name = ?1",
+                [name.as_str()],
+            )
+            .await?;
+        }
+    }
+    let mut stale = BTreeSet::new();
+    for spec in entities {
+        let version = spec.version();
+        if stored.get(spec.name) == Some(&version) {
+            continue;
+        }
+        drop_entity(conn, spec.name).await?;
+        for sql in spec.create() {
+            conn.execute(&sql, ()).await?;
+        }
+        conn.execute(
+            "INSERT INTO entity_version (name, version) VALUES (?1, ?2)
+             ON CONFLICT(name) DO UPDATE SET version = excluded.version",
+            params![spec.name, version],
+        )
+        .await?;
+        stale.insert(spec.name);
+    }
+    Ok(stale)
+}
+
+/// Drops entity type `name`'s tables, if they exist; the full-text table
+/// first, since the record table's triggers write to it.
+async fn drop_entity(conn: &Connection, name: &str) -> Result<()> {
+    conn.execute(&format!("DROP TABLE IF EXISTS \"entity_{name}_fts\""), ())
+        .await?;
+    conn.execute(&format!("DROP TABLE IF EXISTS \"entity_{name}\""), ())
+        .await?;
+    Ok(())
 }
 
 /// The initial scan's write of a page.
@@ -1225,7 +1392,7 @@ mod tests {
     use nom::bytes::complete::{tag, take_while1};
     use nom::sequence::delimited;
 
-    use crate::draw::{DrawChildren, DrawCtx, Element};
+    use crate::draw::{DrawCtx, Element};
     use crate::parse::{InlineStream, Never, Plain};
     use crate::template::DefaultTemplate;
     use crate::tree::{InlineKind, Parsed};
@@ -1388,9 +1555,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn listing_details_hold_summary_and_tags() {
+    async fn details_hold_summary_and_tags() {
         let index = fixture_index().await;
-        let details = index.listing_details("Notes").await.unwrap();
+        let (_, pages) = index.folder_listing("Notes").await.unwrap();
+        let paths: Vec<String> = pages.into_iter().map(|p| p.path).collect();
+        let details = index.details(&paths).await.unwrap();
         assert_eq!(details.len(), 5);
         let tagged = &details["Notes/Weather Tagged.md"];
         assert_eq!(tagged.summary, "Filed under #zephyr only.");
@@ -1401,7 +1570,7 @@ mod tests {
             "Notes for the fifth."
         );
         assert!(details["Notes/2024-03-05 Daily.md"].tags.is_empty());
-        let home = &index.listing_details("").await.unwrap()["Home.md"];
+        let home = &index.details(&["Home.md".to_string()]).await.unwrap()["Home.md"];
         assert_eq!(home.tags, ["meta", "project/alpha", "status"]);
     }
 
@@ -1780,12 +1949,12 @@ mod tests {
     }
 
     /// Runs `sql` on the index's connection.
-    async fn execute(index: &Index<Plain>, sql: &str) {
+    async fn execute<P: Host>(index: &Index<P>, sql: &str) {
         index.conn.lock().await.execute(sql, ()).await.unwrap();
     }
 
     /// The first column of the first row of `sql`, as an integer.
-    async fn query_i64(index: &Index<Plain>, sql: &str) -> Option<i64> {
+    async fn query_i64<P: Host>(index: &Index<P>, sql: &str) -> Option<i64> {
         let conn = index.conn.lock().await;
         first_i64(&conn, sql, ()).await.unwrap()
     }
@@ -1896,7 +2065,7 @@ mod tests {
     async fn bump_version(index: &Index<Plain>) {
         execute(
             index,
-            &format!("PRAGMA user_version = {}", INDEX_VERSION + 1),
+            &format!("PRAGMA user_version = {}", schema_version() + 1),
         )
         .await;
     }
@@ -1945,7 +2114,7 @@ mod tests {
         drop(index);
         let index = reopen(&storage, &fixture()).await;
         assert_eq!(row_count(&index, "page").await, 0);
-        assert_eq!(stored_meta(&index).await.0, Some(INDEX_VERSION));
+        assert_eq!(stored_meta(&index).await.0, Some(schema_version()));
     }
 
     #[tokio::test]
@@ -1956,7 +2125,7 @@ mod tests {
         drop(index);
         let index = reopen(&storage, &fixture()).await;
         assert_eq!(row_count(&index, "page").await, 0);
-        assert_eq!(stored_meta(&index).await.0, Some(INDEX_VERSION));
+        assert_eq!(stored_meta(&index).await.0, Some(schema_version()));
     }
 
     /// Claims `[[ABC-N]]` as a ticket, whose text is its ID.
@@ -1964,8 +2133,8 @@ mod tests {
 
     struct Ticket(String);
 
-    impl Element<TicketHost> for Ticket {
-        fn draw(&self, _: &DrawCtx<'_>, _: DrawChildren<'_, TicketHost>) -> maud::Markup {
+    impl<P: Host> Element<P> for Ticket {
+        fn draw(&self, _: &DrawCtx<'_, P>) -> maud::Markup {
             maud::html! { (self.0) }
         }
 
@@ -2034,7 +2203,7 @@ mod tests {
         let b_root = b.path().to_string_lossy().into_owned();
         assert_eq!(
             stored_meta(&index).await,
-            (Some(INDEX_VERSION), Some(b_root))
+            (Some(schema_version()), Some(b_root))
         );
     }
 
@@ -2393,7 +2562,7 @@ mod tests {
         assert!(!search(&index, "zephyr").await.is_empty());
         assert_eq!(
             query_i64(&index, "PRAGMA user_version").await,
-            Some(INDEX_VERSION)
+            Some(schema_version())
         );
         assert_eq!(
             query_i64(&index, "PRAGMA application_id").await,
@@ -2413,8 +2582,6 @@ mod tests {
         statements.extend(REMOVE_FOLDER.map(|sql| (sql, range.to_vec())));
         statements.push((MTIMES_IN, range.to_vec()));
         statements.push((LISTING_PAGES, vec!["Projects"]));
-        statements.push((LISTING_DETAILS, vec!["Projects"]));
-        statements.push((LISTING_TAGS, vec!["Projects"]));
         statements.push((LISTING_DEEPER_IN, path_and_range.to_vec()));
         statements.push((RECENT_IN, vec![low.as_str(), high.as_str(), "10"]));
         statements.push((CLOUD_IN, range.to_vec()));
@@ -2499,5 +2666,191 @@ mod tests {
         for query in ["strasse", "abc", "123"] {
             assert!(search(&index, query).await.is_empty(), "{query}");
         }
+    }
+
+    /// Records each `[[ABC-N]]` ticket, with its paragraph's text, and one
+    /// summary record per page.
+    struct EntityHost {
+        version: u32,
+    }
+
+    #[derive(crate::Entity)]
+    struct TicketRef {
+        #[entity(index)]
+        key: String,
+        #[entity(fulltext)]
+        line: String,
+        done: Option<bool>,
+    }
+
+    #[derive(crate::Entity)]
+    #[entity(name = "page_fact")]
+    struct Fact {
+        tickets: usize,
+    }
+
+    /// `TicketRef` with another version, as after an extraction change.
+    struct TicketRefV1(TicketRef);
+
+    impl crate::Entity for TicketRefV1 {
+        const NAME: &'static str = "ticket_ref";
+        const VERSION: u32 = 1;
+
+        fn fields() -> Vec<crate::Field> {
+            <TicketRef as crate::Entity>::fields()
+        }
+
+        fn values(&self) -> Vec<FieldValue> {
+            crate::Entity::values(&self.0)
+        }
+    }
+
+    impl Host for EntityHost {
+        type Block = Never;
+        type Inline = Ticket;
+        type Template = DefaultTemplate;
+
+        fn parse_inline(&self, s: &mut InlineStream<'_, Self>) -> Option<Parsed<InlineKind<Self>>> {
+            TicketHost.parse_inline_for(s)
+        }
+
+        fn extract(&self, _path: &str, doc: &crate::DocumentTree<Self>, out: &mut Records) {
+            let mut tickets = 0;
+            for node in doc.nodes() {
+                if let crate::KindRef::Inline(InlineKind::Host(Ticket(key))) = node.kind() {
+                    let line = node.parent().map(|p| p.text()).unwrap_or_default();
+                    let record = TicketRef {
+                        key: key.clone(),
+                        line,
+                        done: None,
+                    };
+                    if self.version == 1 {
+                        out.push(TicketRefV1(record));
+                    } else {
+                        out.push(record);
+                    }
+                    tickets += 1;
+                }
+            }
+            out.push(Fact { tickets });
+        }
+    }
+
+    impl TicketHost {
+        fn parse_inline_for<P: Host<Inline = Ticket>>(
+            &self,
+            s: &mut InlineStream<'_, P>,
+        ) -> Option<Parsed<InlineKind<P>>> {
+            let id = |c: char| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-';
+            let id = s.try_parse(delimited(tag("[["), take_while1(id), tag("]]")))?;
+            Some(s.leaf(InlineKind::Host(Ticket(id.to_string()))))
+        }
+    }
+
+    async fn entity_index(storage: &IndexStorage, root: &Path, version: u32) -> Index<EntityHost> {
+        let tickets = if version == 1 {
+            crate::entity::EntitySpec::of::<TicketRefV1>()
+        } else {
+            crate::entity::EntitySpec::of::<TicketRef>()
+        };
+        let specs = vec![
+            tickets.unwrap(),
+            crate::entity::EntitySpec::of::<Fact>().unwrap(),
+        ];
+        Index::open_with(storage, root, Arc::new(EntityHost { version }), specs)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn entity_records_follow_their_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(
+            root.join("a.md"),
+            "Ship [[ABC-1]] today.\n\nThen [[ABC-2]].\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("b.md"), "Nothing here.\n").unwrap();
+        let index = entity_index(&IndexStorage::InMemory, &root, 0).await;
+        index.scan(&root).await.unwrap();
+        let tickets = "SELECT count(*) FROM entity_ticket_ref";
+        assert_eq!(query_i64(&index, tickets).await, Some(2));
+        assert_eq!(
+            query_i64(&index, "SELECT count(*) FROM entity_page_fact").await,
+            Some(2)
+        );
+        let second = "SELECT ordinal FROM entity_ticket_ref WHERE key = 'ABC-2'";
+        assert_eq!(query_i64(&index, second).await, Some(1));
+        // The full-text field is searchable on its own.
+        let fts =
+            "SELECT count(*) FROM entity_ticket_ref_fts WHERE entity_ticket_ref_fts MATCH 'today'";
+        assert_eq!(query_i64(&index, fts).await, Some(1));
+        // The key's b-tree index is there.
+        let plan = "SELECT count(*) FROM sqlite_schema WHERE name = 'entity_ticket_ref_key'";
+        assert_eq!(query_i64(&index, plan).await, Some(1));
+
+        // Reindexing a page replaces its records.
+        std::fs::write(root.join("a.md"), "Only [[ABC-3]] now.\n").unwrap();
+        index.index_file(&root, "a.md").await.unwrap();
+        assert_eq!(query_i64(&index, tickets).await, Some(1));
+        assert_eq!(query_i64(&index, fts).await, Some(0));
+
+        // Removing a page removes its records, and their full-text rows.
+        index.remove_page("a.md").await.unwrap();
+        assert_eq!(query_i64(&index, tickets).await, Some(0));
+        let any =
+            "SELECT count(*) FROM entity_ticket_ref_fts WHERE entity_ticket_ref_fts MATCH 'now'";
+        assert_eq!(query_i64(&index, any).await, Some(0));
+        assert_eq!(
+            query_i64(&index, "SELECT count(*) FROM entity_page_fact").await,
+            Some(1)
+        );
+
+        // A reset keeps the entity tables, empty until the next scan.
+        index.reset(&root).await.unwrap();
+        assert_eq!(query_i64(&index, tickets).await, Some(0));
+        index.scan(&root).await.unwrap();
+        // Both files are on disk again: `a.md` was only dropped from the index.
+        assert_eq!(
+            query_i64(&index, "SELECT count(*) FROM entity_page_fact").await,
+            Some(2)
+        );
+        assert_eq!(query_i64(&index, tickets).await, Some(1));
+    }
+
+    #[tokio::test]
+    async fn a_changed_entity_type_is_rebuilt_from_unchanged_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.md"), "Ship [[ABC-1]].\n").unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let storage = IndexStorage::FilePath(store.path().join("idx.db"));
+        let index = entity_index(&storage, &root, 0).await;
+        index.scan(&root).await.unwrap();
+        let version = "SELECT version FROM entity_version WHERE name = 'ticket_ref'";
+        let before = query_i64(&index, version).await;
+        execute(&index, "UPDATE entity_page_fact SET tickets = 99").await;
+        drop(index);
+
+        // A new version: its table is rebuilt, and the scan extracts it from
+        // the unchanged file. The other type's rows are left alone.
+        let index = entity_index(&storage, &root, 1).await;
+        assert_ne!(query_i64(&index, version).await, before);
+        let tickets = "SELECT count(*) FROM entity_ticket_ref";
+        assert_eq!(query_i64(&index, tickets).await, Some(0));
+        index.scan(&root).await.unwrap();
+        assert_eq!(query_i64(&index, tickets).await, Some(1));
+        let facts = "SELECT tickets FROM entity_page_fact";
+        assert_eq!(query_i64(&index, facts).await, Some(99));
+        drop(index);
+
+        // A type no longer registered loses its tables.
+        let index = Index::open_with(&storage, &root, Arc::new(EntityHost { version: 0 }), vec![])
+            .await
+            .unwrap();
+        let tables = "SELECT count(*) FROM sqlite_schema WHERE name LIKE 'entity\\_%' ESCAPE '\\'
+             AND name != 'entity_version'";
+        assert_eq!(query_i64(&index, tables).await, Some(0));
     }
 }

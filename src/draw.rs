@@ -12,11 +12,13 @@ use crate::names::encode_path;
 use crate::parse::Host;
 use crate::tree::{Align, BlockKind, Children, InlineKind, Node, Tree};
 
-/// Host elements are plain data that draw themselves around their children.
-pub trait Element<P: Host>: Sized {
-    /// `children` draws the node's children (maud `Render`), so it drops into
-    /// `html!` as `(children)`.
-    fn draw(&self, cx: &DrawCtx<'_>, children: DrawChildren<'_, P>) -> Markup;
+/// Anything that draws itself: a host's block and inline elements, and the
+/// library's page components. Plain data; what `cx` doesn't give it, it
+/// carries in its own state.
+pub trait Element<P: Host> {
+    /// Draws the element, synchronously: async work happens when it is
+    /// built. `cx.draw_children()` draws the node's children inside it.
+    fn draw(&self, cx: &DrawCtx<'_, P>) -> Markup;
 
     /// Text this element contributes to search, besides its children's.
     fn text(&self) -> Option<String> {
@@ -24,28 +26,43 @@ pub trait Element<P: Host>: Sized {
     }
 }
 
-/// What a host element is drawn with, besides its children.
-pub struct DrawCtx<'a> {
-    cx: &'a DrawCx,
+/// What an element is drawn with: the base path, and the node it is drawn
+/// for, if it is in a tree.
+pub struct DrawCtx<'a, P: Host> {
+    base: &'a str,
+    node: Option<(Draw<'a, P>, NodeId)>,
 }
 
-impl DrawCtx<'_> {
+impl<'a, P: Host> DrawCtx<'a, P> {
+    /// For an element that isn't in a tree, which has no children.
+    pub(crate) fn detached(base: &'a str) -> Self {
+        DrawCtx { base, node: None }
+    }
+
     /// Where the wiki is mounted, without a trailing slash: `""` at the
     /// root, e.g. `"/docs"` otherwise.
     pub fn base_path(&self) -> &str {
-        &self.cx.base
+        self.base
+    }
+
+    /// The node's children, drawn when rendered (maud `Render`), so they
+    /// drop into `html!` as `(cx.draw_children())`. Nothing for an element
+    /// that isn't in a tree.
+    pub fn draw_children(&self) -> DrawChildren<'a, P> {
+        DrawChildren { node: self.node }
     }
 }
 
 /// A node's children, drawn when rendered.
 pub struct DrawChildren<'a, P: Host> {
-    draw: Draw<'a, P>,
-    node: NodeId,
+    node: Option<(Draw<'a, P>, NodeId)>,
 }
 
 impl<P: Host> Render for DrawChildren<'_, P> {
     fn render_to(&self, out: &mut String) {
-        self.draw.children(self.node, out);
+        if let Some((draw, node)) = self.node {
+            draw.children(node, out);
+        }
     }
 }
 
@@ -112,12 +129,12 @@ impl<P: Host> Clone for Draw<'_, P> {
 impl<P: Host> Copy for Draw<'_, P> {}
 
 impl<'a, P: Host> Draw<'a, P> {
-    fn children_of(self, node: NodeId) -> DrawChildren<'a, P> {
-        DrawChildren { draw: self, node }
-    }
-
     fn host(self, id: NodeId, element: &impl Element<P>, out: &mut String) {
-        let drawn = element.draw(&DrawCtx { cx: self.cx }, self.children_of(id));
+        let cx = DrawCtx {
+            base: &self.cx.base,
+            node: Some((self, id)),
+        };
+        let drawn = element.draw(&cx);
         match self.line(id) {
             Some(n) => out.push_str(&with_line(&drawn.0, n)),
             None => drawn.render_to(out),
@@ -888,20 +905,20 @@ mod tests {
     }
 
     impl Element<TestHost> for TestBlock {
-        fn draw(&self, _: &DrawCtx<'_>, children: DrawChildren<'_, TestHost>) -> Markup {
+        fn draw(&self, cx: &DrawCtx<'_, TestHost>) -> Markup {
             match self {
-                TestBlock::Callout(kind) => html! { aside class=(kind) { (children) } },
+                TestBlock::Callout(kind) => html! { aside class=(kind) { (cx.draw_children()) } },
             }
         }
     }
 
     impl Element<TestHost> for TestInline {
-        fn draw(&self, cx: &DrawCtx<'_>, children: DrawChildren<'_, TestHost>) -> Markup {
+        fn draw(&self, cx: &DrawCtx<'_, TestHost>) -> Markup {
             match self {
                 TestInline::Ticket(id) => {
                     html! { a.ticket href={ (cx.base_path()) "/" (id) } { (id) } }
                 }
-                TestInline::Marker => html! { span.marker { (children) } },
+                TestInline::Marker => html! { span.marker { (cx.draw_children()) } },
             }
         }
     }

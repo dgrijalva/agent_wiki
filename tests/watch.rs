@@ -351,7 +351,7 @@ async fn sse_announces_changes_to_that_page() {
     write(dir.path(), "a.md", "# A\n");
     write(dir.path(), "b.md", "# B\n");
     let app = open(&dir).await;
-    let mut body = subscribe(&app, "/_wiki/events/a").await;
+    let mut body = subscribe(&app, "/_wiki/events?url=%2Fa").await;
 
     write(dir.path(), "b.md", "# B changed\n");
     // Let the watcher apply `b` on its own before `a` changes.
@@ -370,8 +370,11 @@ async fn sse_announces_changes_to_that_page() {
     })
     .await
     .unwrap_or_else(|_| panic!("no `changed` event; frames before: {seen:?}"));
-    assert!(first.contains("data: a.md"), "{first}");
-    assert!(!seen.iter().any(|t| t.contains("data: b.md")), "{seen:?}");
+    assert!(first.contains("data: /a"), "{first}");
+    assert!(
+        !seen.iter().any(|t| t.contains("event: changed")),
+        "{seen:?}"
+    );
 }
 
 /// With `oneshot`, the streams' only owners of the `Wiki` are the router and
@@ -386,8 +389,8 @@ async fn sse_streams_end_when_every_wiki_and_router_clone_is_dropped() {
     let wiki = Wiki::builder(dir.path()).build().await.unwrap();
     wiki.indexed().await;
     let app: Router = wiki.router();
-    let mut a = subscribe(&app, "/_wiki/events/a").await;
-    let mut missing = subscribe(&app, "/_wiki/events/not/yet").await;
+    let mut a = subscribe(&app, "/_wiki/events?url=%2Fa").await;
+    let mut missing = subscribe(&app, "/_wiki/events?url=%2Fnot%2Fyet").await;
     drop(app);
     drop(wiki);
     for body in [&mut a, &mut missing] {
@@ -399,4 +402,92 @@ async fn sse_streams_end_when_every_wiki_and_router_clone_is_dropped() {
             "SSE stream still open after the wiki and its router were dropped"
         );
     }
+}
+
+/// The next `changed` event's text, skipping keep-alives.
+async fn next_changed(body: &mut Body) -> String {
+    tokio::time::timeout(DEADLINE, async {
+        loop {
+            let text = next_text(body).await.expect("stream ended");
+            if text.contains("event: changed") {
+                return text;
+            }
+        }
+    })
+    .await
+    .expect("no `changed` event")
+}
+
+#[tokio::test]
+async fn a_host_signals_its_own_page_by_url() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "a.md", "# A\n");
+    let wiki = Wiki::builder(dir.path()).build().await.unwrap();
+    wiki.indexed().await;
+    let app: Router = wiki.router();
+    let mut first = subscribe(&app, "/_wiki/events?url=%2Fdashboard").await;
+    let mut second = subscribe(&app, "/_wiki/events?url=%2Fdashboard").await;
+    let mut other = subscribe(&app, "/_wiki/events?url=%2Felsewhere").await;
+    wiki.signal("/dashboard");
+    // Every open instance hears it.
+    assert!(next_changed(&mut first).await.contains("data: /dashboard"));
+    assert!(next_changed(&mut second).await.contains("data: /dashboard"));
+    let quiet = tokio::time::timeout(Duration::from_millis(200), next_changed(&mut other)).await;
+    assert!(quiet.is_err(), "another page was signalled");
+}
+
+#[tokio::test]
+async fn documents_and_folders_can_be_watched() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "p/a.md", "# A\n");
+    write(dir.path(), "p/q/b.md", "# B\n");
+    write(dir.path(), "c.md", "# C\n");
+    let wiki = Wiki::builder(dir.path()).build().await.unwrap();
+    wiki.indexed().await;
+    let Some(agent_wiki::Entry::Document(a)) = wiki.lookup("p/a").await.unwrap() else {
+        panic!("p/a is a document");
+    };
+    let Some(agent_wiki::Entry::Folder(p)) = wiki.lookup("p").await.unwrap() else {
+        panic!("p is a folder");
+    };
+    let mut doc = a.watch();
+    let mut folder = p.watch();
+    let mut root = wiki.root().watch();
+
+    // A change elsewhere moves only the root.
+    write(dir.path(), "c.md", "# C changed\n");
+    tokio::time::timeout(DEADLINE, root.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!folder.has_changed().unwrap());
+    assert!(!doc.has_changed().unwrap());
+
+    // A change deep in the subtree moves the folder.
+    write(dir.path(), "p/q/b.md", "# B changed\n");
+    tokio::time::timeout(DEADLINE, folder.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!doc.has_changed().unwrap());
+
+    write(dir.path(), "p/a.md", "# A changed\n");
+    tokio::time::timeout(DEADLINE, doc.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        *doc.borrow_and_update(),
+        Some(agent_wiki::DocumentChange::Modified)
+    );
+
+    fs::remove_file(dir.path().join("p/a.md")).unwrap();
+    tokio::time::timeout(DEADLINE, doc.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        *doc.borrow_and_update(),
+        Some(agent_wiki::DocumentChange::Removed)
+    );
 }

@@ -5,6 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+agent_wiki_derive = { path = "derive", version = "0.1.0" }
 anyhow = "1"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
@@ -30,4 +31,4 @@ tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 
 [workspace]
-members = ["tools/pending"]
+members = ["derive", "tools/pending"]

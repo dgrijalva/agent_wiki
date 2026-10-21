@@ -24,7 +24,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::document::Document;
+use crate::document::DocumentTree;
 use crate::index::{FsKind, Resolution, fs_kind};
 use crate::names::{LinkTarget, path_to_url};
 use crate::parse::{Host, parse};
@@ -439,7 +439,7 @@ to a heading (by its text or anchor), not both.";
 /// The document at `path` (relative to the wiki root, `.md` optional),
 /// parsed: its rel and its tree. Fails for a path that isn't a document
 /// file reached without symlinks.
-async fn load<P: Host>(inner: &Inner<P>, path: &str) -> Result<(String, Document<P>)> {
+async fn load<P: Host>(inner: &Inner<P>, path: &str) -> Result<(String, DocumentTree<P>)> {
     let Some(rel) = document_rel(path) else {
         bail!("not a document path: {path}");
     };

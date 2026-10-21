@@ -246,9 +246,12 @@ async fn push(app: &axum::Router, state: Value) {
 /// Opens a page's live-update stream as tab `tab`; the page is open while
 /// the returned response (and its body) is kept.
 async fn connect(app: &axum::Router, url: &str, tab: &str) -> axum::response::Response {
-    let request = Request::get(format!("/_wiki/events{url}?tab={tab}"))
-        .body(Body::empty())
-        .unwrap();
+    let request = Request::get(format!(
+        "/_wiki/events?url={}&tab={tab}",
+        url.replace('/', "%2F")
+    ))
+    .body(Body::empty())
+    .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     response
@@ -312,7 +315,7 @@ async fn a_document_page_carries_its_tab_and_copy_button() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
     assert!(
-        body.contains("sse-connect=\"/_wiki/events/projects/alpha?tab="),
+        body.contains("sse-connect=\"/_wiki/events?url=%2Fprojects%2Falpha&amp;tab="),
         "{body}"
     );
     assert!(body.contains("data-base=\"\""), "{body}");

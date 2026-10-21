@@ -95,3 +95,21 @@ async fn stale_rows_are_corrected_by_reconciliation() {
     assert!(index.contains("href=\"/home"), "{index}");
     assert!(!index.contains("href=\"/old"), "{index}");
 }
+
+#[tokio::test]
+async fn reindex_rebuilds_from_the_files() {
+    let site = tempfile::tempdir().unwrap();
+    fs::write(site.path().join("a.md"), "# Alpha\n\nZephyr.\n").unwrap();
+    let store = tempfile::tempdir().unwrap();
+    let storage = IndexStorage::FilePath(store.path().join("index.db"));
+    let wiki = open(site.path(), &storage).await;
+    wiki.reindex().await.unwrap();
+    let found = wiki
+        .search("zephyr", agent_wiki::SearchOpts::default())
+        .await
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].path(), "a.md");
+    let body = ok_body(&wiki.router(), "/").await;
+    assert!(body.contains(">Alpha</a>"), "{body}");
+}

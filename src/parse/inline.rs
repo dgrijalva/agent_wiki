@@ -1133,7 +1133,7 @@ mod tests {
     use nom::sequence::{delimited, preceded};
 
     use super::*;
-    use crate::draw::{DrawChildren, DrawCtx, DrawCx, Element, draw_blocks};
+    use crate::draw::{DrawCtx, DrawCx, Element, draw_blocks};
     use crate::parse::{Never, Plain, parse};
     use crate::template::DefaultTemplate;
     use crate::tree::Parsed;
@@ -1414,11 +1414,13 @@ mod tests {
     }
 
     impl Element<SampleHost> for SampleInline {
-        fn draw(&self, _: &DrawCtx<'_>, children: DrawChildren<'_, SampleHost>) -> Markup {
+        fn draw(&self, cx: &DrawCtx<'_, SampleHost>) -> Markup {
             match self {
                 SampleInline::Ticket(id) => html! { span.ticket { (id) } },
-                SampleInline::Marker(kind) => html! { span class={ "marker-" (kind) } { (children) } },
-                SampleInline::Todo => html! { span.todo { (children) } },
+                SampleInline::Marker(kind) => {
+                    html! { span class={ "marker-" (kind) } { (cx.draw_children()) } }
+                }
+                SampleInline::Todo => html! { span.todo { (cx.draw_children()) } },
             }
         }
     }
@@ -1468,7 +1470,10 @@ mod tests {
             "<p>[[ABC-1]] <code>[[ABC-2]]</code></p>\n"
         );
         // No `]`: the hook's `None` rewinds, and the built-ins run.
-        assert_eq!(draw(&SampleHost, "[OPEN: *a*\n"), "<p>[OPEN: <em>a</em></p>\n");
+        assert_eq!(
+            draw(&SampleHost, "[OPEN: *a*\n"),
+            "<p>[OPEN: <em>a</em></p>\n"
+        );
     }
 
     #[test]

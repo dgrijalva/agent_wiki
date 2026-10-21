@@ -14,6 +14,9 @@ struct Args {
     /// Database file to keep the index in across runs; in memory when omitted.
     #[arg(long, value_name = "PATH")]
     index: Option<PathBuf>,
+    /// Rebuild the index from scratch at startup, in the background.
+    #[arg(long)]
+    reindex: bool,
 }
 
 #[tokio::main]
@@ -27,6 +30,14 @@ async fn main() -> anyhow::Result<()> {
         .index_storage(storage)
         .build()
         .await?;
+    if args.reindex {
+        let wiki = wiki.clone();
+        tokio::spawn(async move {
+            if let Err(e) = wiki.reindex().await {
+                eprintln!("agent_wiki: reindex: {e:#}");
+            }
+        });
+    }
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", args.port)).await?;
     println!(
         "Serving {} at http://127.0.0.1:{}/",

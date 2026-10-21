@@ -8,8 +8,9 @@ mod stream;
 use maud::Markup;
 
 pub use self::stream::{BlockStream, InlineStream};
-use crate::document::Document;
-use crate::draw::{DrawChildren, DrawCtx, Element};
+use crate::document::DocumentTree;
+use crate::draw::{DrawCtx, Element};
+use crate::entity::Records;
 use crate::template::{DefaultTemplate, Template};
 use crate::tree::{BlockKind, Children, InlineKind, Parsed};
 
@@ -47,6 +48,14 @@ pub trait Host: Sized + Send + Sync + 'static {
         let _ = s;
         None
     }
+
+    /// Called once a document at `path` (from the root, with `.md`) is
+    /// parsed for the index: pushes the records of the host's entity types
+    /// found in it, which replace the document's stored ones. Pure, like the
+    /// parse hooks: it reads the tree and does no I/O.
+    fn extract(&self, path: &str, doc: &DocumentTree<Self>, out: &mut Records) {
+        let _ = (path, doc, out);
+    }
 }
 
 /// How deep the parser nests block containers (quotes, list items, a
@@ -56,11 +65,11 @@ pub trait Host: Sized + Send + Sync + 'static {
 const MAX_NESTING: usize = 32;
 
 /// Parses `source` with `host`'s hooks.
-pub(crate) fn parse<P: Host>(host: &P, source: &str) -> Document<P> {
+pub(crate) fn parse<P: Host>(host: &P, source: &str) -> DocumentTree<P> {
     let mut s = BlockStream::new(host, source.lines().collect());
     let (frontmatter, body) = s.document();
     inline::inlines(host, &mut s.tree, &s.refs);
-    Document {
+    DocumentTree {
         frontmatter,
         tree: s.tree,
         body: Children::new(body),
@@ -81,7 +90,7 @@ impl Host for Plain {
 }
 
 impl<P: Host> Element<P> for Never {
-    fn draw(&self, _: &DrawCtx<'_>, _: DrawChildren<'_, P>) -> Markup {
+    fn draw(&self, _: &DrawCtx<'_, P>) -> Markup {
         match *self {}
     }
 }

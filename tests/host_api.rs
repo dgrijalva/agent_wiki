@@ -6,8 +6,8 @@ use agent_wiki::maud::{Markup, html};
 use agent_wiki::nom::bytes::complete::{tag, take_while1};
 use agent_wiki::nom::sequence::delimited;
 use agent_wiki::{
-    BodyCtx, DrawChildren, DrawCtx, Element, HeadCtx, Host, InlineKind, InlineStream, Never,
-    PageKind, Parsed, Template, Wiki,
+    BodyCtx, DrawCtx, Element, HeadCtx, Host, InlineKind, InlineStream, Never, PageKind, Parsed,
+    RecentlyEdited, Template, Wiki,
 };
 use axum::Router;
 use axum::body::Body;
@@ -21,7 +21,7 @@ struct TestHost;
 struct Ticket(String);
 
 impl Element<TestHost> for Ticket {
-    fn draw(&self, _: &DrawCtx<'_>, _: DrawChildren<'_, TestHost>) -> Markup {
+    fn draw(&self, _: &DrawCtx<'_, TestHost>) -> Markup {
         html! { span.ticket { (self.0) } }
     }
 
@@ -62,11 +62,12 @@ impl Template<TestHost> for TestTemplate {
     ) -> Markup {
         let kind = match ctx.kind() {
             PageKind::Document(meta) => format!("document {}", meta.path()),
-            PageKind::FolderIndex => "folder index".to_string(),
+            PageKind::FolderIndex { path } => format!("folder index {path}"),
             PageKind::Search { query } => format!("search {query}"),
-            PageKind::Tag => "tag".to_string(),
-            PageKind::Disambiguation => "disambiguation".to_string(),
+            PageKind::Tag { tag } => format!("tag {tag}"),
+            PageKind::Disambiguation { target } => format!("disambiguation {target}"),
             PageKind::NotFound => "not found".to_string(),
+            PageKind::Custom => "custom".to_string(),
         };
         let probe = ctx
             .request()
@@ -205,7 +206,9 @@ async fn a_custom_body_places_the_chrome_inside_the_htmx_root() {
     // Live-update wiring is still the library's.
     // The stream carries the page's tab id, which differs per page load.
     assert!(
-        body.contains("<body hx-ext=\"sse\" sse-connect=\"/_wiki/events/sub/Deep?tab="),
+        body.contains(
+            "<body hx-ext=\"sse\" sse-connect=\"/_wiki/events?url=%2Fsub%2FDeep&amp;tab="
+        ),
         "{body}"
     );
     assert!(body[root..].starts_with(
@@ -220,11 +223,15 @@ async fn kind_matches_each_page_type() {
     for (uri, status, kind) in [
         ("/Page", StatusCode::OK, "document Page.md"),
         ("/sub/Deep", StatusCode::OK, "document sub/Deep.md"),
-        ("/", StatusCode::OK, "folder index"),
-        ("/sub/", StatusCode::OK, "folder index"),
+        ("/", StatusCode::OK, "folder index "),
+        ("/sub/", StatusCode::OK, "folder index sub"),
         ("/_wiki/search?q=x", StatusCode::OK, "search x"),
-        ("/_wiki/tag/topic", StatusCode::OK, "tag"),
-        ("/_wiki/link?to=Nowhere", StatusCode::OK, "disambiguation"),
+        ("/_wiki/tag/Topic", StatusCode::OK, "tag topic"),
+        (
+            "/_wiki/link?to=Nowhere",
+            StatusCode::OK,
+            "disambiguation Nowhere",
+        ),
         ("/Missing", StatusCode::NOT_FOUND, "not found"),
     ] {
         let (got, body) = get(&app, uri, "").await;
@@ -266,4 +273,49 @@ async fn the_base_path_is_visible_to_the_template() {
             "{base}: {body}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_host_route_draws_a_custom_page() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Page.md"), "# Page\n").unwrap();
+    let wiki = Wiki::builder(dir.path())
+        .host(TestHost, TestTemplate)
+        .base_path("/docs")
+        .build()
+        .await
+        .unwrap();
+    wiki.indexed().await;
+    let dashboard = {
+        let wiki = wiki.clone();
+        move |request: Request<Body>| async move {
+            let (parts, _) = request.into_parts();
+            // A library component, loaded first and drawn in the host's content.
+            let recent = RecentlyEdited::load(&wiki.root(), 5).await.unwrap();
+            let page = wiki.custom_page(&parts, "Dash").live();
+            let html = page
+                .draw(|ctx| html! { p #mine { "mine" } (ctx.draw(&recent)) })
+                .await;
+            axum::response::Html(html.into_string())
+        }
+    };
+    let app = wiki
+        .router()
+        .route("/dashboard", axum::routing::get(dashboard));
+    let body = ok(&app, "/dashboard").await;
+    // Through the host's template, with its own content and the page kind.
+    assert!(body.contains("<title>Dash — Test</title>"), "{body}");
+    assert!(body.contains("<p id=\"kind\">custom</p>"), "{body}");
+    assert!(body.contains("<p id=\"mine\">mine</p>"), "{body}");
+    assert!(
+        body.contains("<h2>Recently edited</h2><ul><li><a href=\"/docs/Page\">Page</a>"),
+        "{body}"
+    );
+    // Live at its own URL, without a tab: it isn't a document.
+    assert!(
+        body.contains("sse-connect=\"/docs/_wiki/events?url=%2Fdashboard\""),
+        "{body}"
+    );
+    assert!(body.contains("hx-get=\"/dashboard\""), "{body}");
+    assert!(!body.contains("data-tab"), "{body}");
 }

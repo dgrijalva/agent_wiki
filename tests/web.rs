@@ -350,7 +350,7 @@ async fn hosted_under_docs() {
     assert!(body.contains("<a href=\"/docs/Notes/Body%20Only\">Body Only</a>"));
 
     let body = ok_body(&app, "/docs/Home").await;
-    assert!(body.contains("sse-connect=\"/docs/_wiki/events/Home?tab="));
+    assert!(body.contains("sse-connect=\"/docs/_wiki/events?url=%2Fdocs%2FHome&amp;tab="));
     assert!(body.contains("data-base=\"/docs\""));
     assert!(body.contains("hx-get=\"/docs/Home\""));
 }
@@ -518,7 +518,7 @@ async fn page_views_are_wired_for_live_updates() {
     for needle in [
         "htmx.org@2.0.11/dist/htmx.min.js",
         "htmx-ext-sse@2.2.4/dist/sse.min.js",
-        "<body hx-ext=\"sse\" sse-connect=\"/_wiki/events/Home?tab=",
+        "<body hx-ext=\"sse\" sse-connect=\"/_wiki/events?url=%2FHome&amp;tab=",
         "hx-get=\"/Home\"",
         "hx-trigger=\"sse:changed\"",
         "hx-select=\"#htmx-root\"",
@@ -549,7 +549,9 @@ async fn page_views_are_wired_for_live_updates() {
     }
 
     let body = ok_body(&app, "/Projects/Beta/Deep/Nested%20Note").await;
-    assert!(body.contains("sse-connect=\"/_wiki/events/Projects/Beta/Deep/Nested%20Note?tab="));
+    assert!(body.contains(
+        "sse-connect=\"/_wiki/events?url=%2FProjects%2FBeta%2FDeep%2FNested%2520Note&amp;tab="
+    ));
 
     for uri in ["/", "/_wiki/search?q=x"] {
         let body = ok_body(&app, uri).await;
@@ -563,11 +565,7 @@ async fn page_views_are_wired_for_live_updates() {
 #[tokio::test]
 async fn invalid_event_paths_are_not_found() {
     let app = root_app().await;
-    for uri in [
-        "/_wiki/events/..%2Fx",
-        "/_wiki/events/a/../b",
-        "/_wiki/events",
-    ] {
+    for uri in ["/_wiki/events?url=x", "/_wiki/events?url=", "/_wiki/events"] {
         assert_eq!(
             get_path(&app, uri).await.status,
             StatusCode::NOT_FOUND,

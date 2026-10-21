@@ -6,22 +6,23 @@ use std::time::Duration;
 use anyhow::Result;
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 
 use crate::index::{FsKind, Index, collect_pages, fs_kind, list_folder};
 use crate::names::is_hidden;
 use crate::parse::Host;
+use crate::signals::{DocumentChange, Signals};
 
 const DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// Watches `root` (canonical) recursively and keeps `index` current,
-/// publishing on `changed` the rel of every page reindexed or removed. The
-/// returned debouncer stops the watch when dropped, which also ends the
-/// task applying the changes and drops its `changed` sender.
+/// telling `signals` of every page reindexed or removed, once the index has
+/// the change. The returned debouncer stops the watch when dropped, which
+/// also ends the task applying the changes.
 pub fn start<P: Host>(
     root: PathBuf,
     index: Index<P>,
-    changed: broadcast::Sender<Arc<str>>,
+    signals: Arc<Signals>,
 ) -> Result<Debouncer<RecommendedWatcher>> {
     let (tx, mut rx) = mpsc::unbounded_channel::<DebounceEventResult>();
     let mut debouncer = new_debouncer(DEBOUNCE, move |batch: DebounceEventResult| {
@@ -43,10 +44,23 @@ pub fn start<P: Host>(
             }
             let mut touched = Touched::new();
             apply_batch(&root, &index, paths, &mut touched).await;
-            for rel in touched {
-                // An error only means nobody is subscribed.
-                let _ = changed.send(rel.into());
-            }
+            let touched: Vec<String> = touched.into_iter().collect();
+            // A touched page still indexed was (re)indexed; any other was
+            // removed. On a failed lookup, all count as modified.
+            let present = index.details(&touched).await.ok();
+            let changes: Vec<(String, DocumentChange)> = touched
+                .into_iter()
+                .map(|rel| {
+                    let removed = present.as_ref().is_some_and(|p| !p.contains_key(&rel));
+                    let change = if removed {
+                        DocumentChange::Removed
+                    } else {
+                        DocumentChange::Modified
+                    };
+                    (rel, change)
+                })
+                .collect();
+            signals.changed(&changes);
         }
     });
     Ok(debouncer)
