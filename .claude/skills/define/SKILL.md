@@ -9,7 +9,7 @@ description: The default way of working on agent_wiki's design. Use for any desi
 
 ## Capturing a decision
 
-1. **Find where the subject lives** in `docs/design/agent_wiki.md`. Look for an existing `[OPEN: …]` or `[PROVISIONAL: …]` it settles (`cargo run -q -p pending -- docs --section "<heading words>"`).
+1. **Find where the subject lives** in `docs/design/` (`agent_wiki.md` is the core; areas such as `mcp.md` have their own file). Look for an existing `[OPEN: …]` or `[PROVISIONAL: …]` it settles (`cargo run -q -p pending -- docs --section "<heading words>"`).
 2. **Merge it into that place.** Resolve the marker, or narrow it to what remains. Don't append a change note; git holds history.
 3. **Use Dave's words.** Change only what the decision covers. Don't add detail he didn't give.
 4. **Check the rest of the doc for contradictions.**

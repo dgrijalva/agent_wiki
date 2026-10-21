@@ -24,10 +24,11 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::Wiki;
+use crate::document::Document;
 use crate::index::{FsKind, Resolution, fs_kind};
-use crate::names::LinkTarget;
+use crate::names::{LinkTarget, path_to_url};
 use crate::parse::{Host, parse};
+use crate::{Inner, Wiki};
 
 /// A tool an agent can call. Implementors hold whatever they need (the
 /// built-in tools hold a [`Wiki`]); [`route`] adapts one to rmcp.
@@ -52,16 +53,45 @@ pub fn route<S: Send + Sync + 'static, T: Tool>(tool: T) -> ToolRoute<S> {
     ToolRoute::new_dyn(attr, move |cx: ToolCallContext<'_, S>| {
         let tool = tool.clone();
         let args = Value::Object(cx.arguments.clone().unwrap_or_default());
+        let origin = cx
+            .request_context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(origin_of);
         Box::pin(async move {
             let args: T::Args = serde_json::from_value(args)
                 .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
-            let result = match tool.call(args).await {
+            let result = match ORIGIN.scope(origin, tool.call(args)).await {
                 Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
                 Err(e) => CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))]),
             };
             Ok(CallToolResponse::from(result))
         })
     })
+}
+
+tokio::task_local! {
+    /// The origin (`scheme://host`) of the MCP request a tool is running
+    /// for; see [`route`].
+    static ORIGIN: Option<String>;
+}
+
+/// `scheme://host` of an HTTP request: its `Host` header, with
+/// `X-Forwarded-Proto` or else `http`.
+fn origin_of(parts: &axum::http::request::Parts) -> Option<String> {
+    let host = parts.headers.get(axum::http::header::HOST)?.to_str().ok()?;
+    let scheme = parts
+        .headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("http");
+    Some(format!("{scheme}://{host}"))
+}
+
+/// The origin of the MCP request the current tool call is for, if it came
+/// through [`route`] over HTTP.
+fn request_origin() -> Option<String> {
+    ORIGIN.try_with(Clone::clone).ok().flatten()
 }
 
 impl<P: Host> Wiki<P> {
@@ -72,6 +102,7 @@ impl<P: Host> Wiki<P> {
             .with_route(route(Search::new(self.clone())))
             .with_route(route(Overview::new(self.clone())))
             .with_route(route(OpenFiles::new(self.clone())))
+            .with_route(route(PageUrl::new(self.clone())))
     }
 }
 
@@ -122,7 +153,8 @@ fn instructions(root: &std::path::Path) -> String {
 }
 
 const USAGE: &str = "Use `search` to find documents, and `overview` to see a document's outline (with \
-line numbers) before reading the part you need. Use `open_files` to see what the user has \
+line numbers) before reading the part you need. Use `page_url` to link the user to a page, a \
+line or a heading in the wiki's web view. Use `open_files` to see what the user has \
 open in the wiki's web view, and what they have selected.";
 
 /// The HTTP endpoint for the default tools, with no sessions.
@@ -236,14 +268,7 @@ section you need.";
 
     async fn call(&self, args: OverviewArgs) -> Result<String> {
         let inner = &self.wiki.inner;
-        let Some(rel) = document_rel(&args.path) else {
-            bail!("not a document path: {}", args.path);
-        };
-        if !matches!(fs_kind(&inner.root, &rel).await, Ok(FsKind::File)) {
-            bail!("no document at {rel}");
-        }
-        let source = tokio::fs::read_to_string(inner.root.join(&rel)).await?;
-        let doc = parse(&*inner.host, &source);
+        let (rel, doc) = load(inner, &args.path).await?;
         let ex = doc.extract();
         let name = rel.rsplit('/').next().unwrap_or(&rel);
 
@@ -351,6 +376,79 @@ the file).";
         }
         Ok(out)
     }
+}
+
+/// A page's URL in the web view, for linking the user to it.
+pub struct PageUrl<P: Host> {
+    wiki: Wiki<P>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct PageUrlArgs {
+    /// The document's path, relative to the wiki root; `.md` is optional.
+    pub path: String,
+    /// A source line to link to.
+    pub line: Option<usize>,
+    /// A heading to link to, by its text or its anchor.
+    pub heading: Option<String>,
+}
+
+impl<P: Host> PageUrl<P> {
+    pub fn new(wiki: Wiki<P>) -> Self {
+        PageUrl { wiki }
+    }
+}
+
+impl<P: Host> Tool for PageUrl<P> {
+    type Args = PageUrlArgs;
+    const NAME: &'static str = "page_url";
+    const DESCRIPTION: &'static str = "The URL of a document in the wiki's web view, to give \
+the user a link. Optionally to a line (a line link, which highlights the block holding it) or \
+to a heading (by its text or anchor), not both.";
+
+    async fn call(&self, args: PageUrlArgs) -> Result<String> {
+        let inner = &self.wiki.inner;
+        let (rel, doc) = load(inner, &args.path).await?;
+        let fragment = match (args.line, args.heading.as_deref()) {
+            (Some(_), Some(_)) => bail!("give a line or a heading, not both"),
+            (Some(0), None) => bail!("lines start at 1"),
+            (Some(line), None) => format!("#:{line}"),
+            (None, Some(heading)) => {
+                let want = heading.trim().trim_start_matches('#').trim().to_lowercase();
+                let ex = doc.extract();
+                let Some(found) = ex
+                    .outline
+                    .iter()
+                    .find(|h| h.text.to_lowercase() == want || h.anchor == want)
+                else {
+                    bail!("no heading \"{heading}\" in {rel}");
+                };
+                format!("#{}", found.anchor)
+            }
+            (None, None) => String::new(),
+        };
+        let origin = request_origin().unwrap_or_default();
+        Ok(format!(
+            "{origin}{}{}{fragment}",
+            inner.base,
+            path_to_url(&rel)
+        ))
+    }
+}
+
+/// The document at `path` (relative to the wiki root, `.md` optional),
+/// parsed: its rel and its tree. Fails for a path that isn't a document
+/// file reached without symlinks.
+async fn load<P: Host>(inner: &Inner<P>, path: &str) -> Result<(String, Document<P>)> {
+    let Some(rel) = document_rel(path) else {
+        bail!("not a document path: {path}");
+    };
+    if !matches!(fs_kind(&inner.root, &rel).await, Ok(FsKind::File)) {
+        bail!("no document at {rel}");
+    }
+    let source = tokio::fs::read_to_string(inner.root.join(&rel)).await?;
+    let doc = parse(&*inner.host, &source);
+    Ok((rel, doc))
 }
 
 /// The rel of the document at `path` (relative to the wiki root, `.md`

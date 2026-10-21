@@ -69,7 +69,7 @@ impl Host for SampleHost {
 }
 ```
 
-The full sketch is in [`docs/design/example.rs`](docs/design/example.rs), and the design in [`docs/design/agent_wiki.md`](docs/design/agent_wiki.md).
+The full sketch is in [`docs/design/example.rs`](docs/design/example.rs), and the design in [`docs/design/`](docs/design/), starting from [`agent_wiki.md`](docs/design/agent_wiki.md).
 
 ## Planned features
 

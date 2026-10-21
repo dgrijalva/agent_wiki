@@ -17,7 +17,8 @@ pub use rmcp;
 
 pub use crate::draw::{DrawChildren, DrawCtx, Element};
 pub use crate::mcp::{
-    OpenFiles, OpenFilesArgs, Overview, OverviewArgs, Search, SearchArgs, Tool, route,
+    OpenFiles, OpenFilesArgs, Overview, OverviewArgs, PageUrl, PageUrlArgs, Search, SearchArgs,
+    Tool, route,
 };
 pub use crate::parse::{BlockStream, Host, InlineStream, Never, Plain};
 pub use crate::template::{BodyCtx, DefaultTemplate, DocumentMeta, HeadCtx, PageKind, Template};

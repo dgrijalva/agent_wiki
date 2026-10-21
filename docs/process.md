@@ -6,9 +6,19 @@ Single-developer project.
 
 | Path | Holds |
 |---|---|
-| `docs/design/agent_wiki.md` | The design doc: the source of truth for what agent_wiki is supposed to be. |
+| `docs/design/` | The design: the source of truth for what agent_wiki is supposed to be. `agent_wiki.md` is the core; `mcp.md` is the MCP server. |
 | `docs/plans/` | Plans and journals. A plan is trash once the plan is done. |
 | `tools/pending/` | Lists every marker in the docs. |
+
+## Design files
+
+One file per area. The layout is expected to evolve toward (Dave, 2026-10-20):
+
+- core (main concept, high level overview)
+- web UI
+- MCP
+- data model layer
+- integration guide
 
 ## Markers
 

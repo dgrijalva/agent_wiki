@@ -4,7 +4,8 @@ use std::fs;
 use std::path::Path;
 
 use agent_wiki::{
-    OpenFiles, OpenFilesArgs, Overview, OverviewArgs, Search, SearchArgs, Tool, Wiki,
+    OpenFiles, OpenFilesArgs, Overview, OverviewArgs, PageUrl, PageUrlArgs, Search, SearchArgs,
+    Tool, Wiki,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -191,7 +192,7 @@ async fn over_http() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["open_files", "overview", "search"]);
+    assert_eq!(names, ["open_files", "overview", "page_url", "search"]);
 
     let call = rpc(
         &app,
@@ -214,6 +215,19 @@ async fn over_http() {
     )
     .await;
     assert_eq!(error["result"]["isError"], true, "{error}");
+
+    // Over HTTP, a page URL is absolute, from the request's host.
+    let url = rpc(
+        &app,
+        json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {
+            "name": "page_url", "arguments": {"path": "projects/alpha.md", "line": 10}
+        }}),
+    )
+    .await;
+    assert_eq!(
+        url["result"]["content"][0]["text"], "http://127.0.0.1/projects/alpha#:10",
+        "{url}"
+    );
     assert_eq!(
         error["result"]["content"][0]["text"],
         "no document at nope.md"
@@ -309,4 +323,52 @@ async fn a_document_page_carries_its_tab_and_copy_button() {
         "{body}"
     );
     assert!(body.contains("/_wiki/state"), "{body}");
+}
+
+#[tokio::test]
+async fn page_urls() {
+    let dir = folder();
+    let wiki = Wiki::builder(dir.path())
+        .base_path("/docs")
+        .build()
+        .await
+        .unwrap();
+    let tool = PageUrl::new(wiki);
+    let url = |path: &str, line: Option<usize>, heading: Option<&str>| {
+        tool.call(PageUrlArgs {
+            path: path.into(),
+            line,
+            heading: heading.map(Into::into),
+        })
+    };
+    // Called directly, outside an MCP request: a path from the site root.
+    assert_eq!(
+        url("projects/alpha", None, None).await.unwrap(),
+        "/docs/projects/alpha"
+    );
+    assert_eq!(
+        url("projects/alpha.md", Some(14), None).await.unwrap(),
+        "/docs/projects/alpha#:14"
+    );
+    for heading in ["Status", "## status", "status"] {
+        assert_eq!(
+            url("projects/alpha", None, Some(heading)).await.unwrap(),
+            "/docs/projects/alpha#status",
+            "{heading}"
+        );
+    }
+    let err = |r: anyhow::Result<String>| r.unwrap_err().to_string();
+    assert_eq!(
+        err(url("projects/alpha", Some(3), Some("Status")).await),
+        "give a line or a heading, not both"
+    );
+    assert_eq!(
+        err(url("projects/alpha", None, Some("Nope")).await),
+        "no heading \"Nope\" in projects/alpha.md"
+    );
+    assert_eq!(
+        err(url("projects/alpha", Some(0), None).await),
+        "lines start at 1"
+    );
+    assert_eq!(err(url("gone", None, None).await), "no document at gone.md");
 }
