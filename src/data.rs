@@ -12,9 +12,11 @@ use tokio::sync::watch;
 use crate::Wiki;
 use crate::document::{DocumentTree, Extracted, OutlineHeading, slug};
 use crate::draw::{DrawCtx, DrawCx, Element, WikiHref, draw_blocks};
+use crate::entity::{Tag, Wikilink};
 use crate::index::{FsKind, Resolution, fs_kind};
 use crate::names::{LinkTarget, encode_component, folder_url, path_to_url};
 use crate::parse::{Host, parse};
+use crate::query::filter::eq;
 use crate::signals::DocumentChange;
 
 /// What is at a path: a folder or a document.
@@ -188,16 +190,16 @@ impl<P: Host> Document<P> {
         };
         let tree = parse(&*wiki.inner.host, &source);
         let ex = tree.extract();
-        let details = wiki
+        let edited = wiki
             .inner
             .index
             .details(&[path.to_string()])
             .await?
-            .remove(path);
-        let (tags, edited) = match details {
-            Some(details) => (details.tags, Some(details.edited)),
-            None => (Vec::new(), None),
-        };
+            .remove(path)
+            .map(|details| details.edited);
+        let records = wiki.query::<Tag>().document(path).fetch().await?;
+        let mut tags: Vec<String> = records.into_iter().map(|t| t.into_record().tag).collect();
+        tags.sort();
         Ok(Some(Document {
             wiki: wiki.clone(),
             path: path.to_string(),
@@ -352,11 +354,15 @@ impl<P: Host> Wiki<P> {
     /// with the ordinal of its first inline occurrence (`None` when the tag
     /// is only in frontmatter), which the page draws as `#tag-{n}`.
     pub async fn tagged(&self, tag: &str) -> Result<Vec<(Document<P>, Option<i64>)>> {
-        let tagged = self.inner.index.tagged(tag).await?;
+        let tagged = self
+            .query::<Tag>()
+            .filter(eq("tag", tag.to_lowercase()))
+            .fetch()
+            .await?;
         let mut out = Vec::with_capacity(tagged.len());
-        for (page, ordinal) in tagged {
-            if let Some(doc) = Document::load(self, &page.path).await? {
-                out.push((doc, ordinal));
+        for tag in tagged {
+            if let Some(doc) = Document::load(self, tag.path()).await? {
+                out.push((doc, tag.record().first));
             }
         }
         out.sort_by_cached_key(|(doc, _)| doc.title().to_lowercase());
@@ -378,10 +384,22 @@ impl<P: Host> Wiki<P> {
             Resolution::Missing => Vec::new(),
         };
         let matches = load_all(self, matches.into_iter().map(|p| p.path)).await?;
-        let mut references = Vec::new();
-        for (page, ordinal) in index.references(&target.name_key).await? {
-            if let Some(doc) = Document::load(self, &page.path).await? {
-                references.push((doc, ordinal));
+        // In page order, then document order: a page's first link is first.
+        let links = self
+            .query::<Wikilink>()
+            .filter(eq("key", target.name_key.clone()))
+            .fetch()
+            .await?;
+        let mut references: Vec<(Document<P>, i64)> = Vec::new();
+        for link in links {
+            if references
+                .last()
+                .is_some_and(|(doc, _)| doc.path() == link.path())
+            {
+                continue;
+            }
+            if let Some(doc) = Document::load(self, link.path()).await? {
+                references.push((doc, link.ordinal()));
             }
         }
         references.sort_by_cached_key(|(doc, _)| doc.title().to_lowercase());

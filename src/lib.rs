@@ -8,6 +8,7 @@ mod links;
 mod mcp;
 mod names;
 mod parse;
+mod query;
 mod signals;
 mod tabs;
 mod template;
@@ -18,7 +19,7 @@ mod web;
 // The derive's generated code names `::agent_wiki`, here too.
 extern crate self as agent_wiki;
 
-pub use agent_wiki_derive::Entity;
+pub use agent_wiki_derive::EntityType;
 pub use maud;
 pub use nom;
 pub use rmcp;
@@ -30,12 +31,15 @@ pub use crate::components::{
 pub use crate::data::{Document, DocumentBody, Entry, Folder, LinkPage, SearchOpts, Walk};
 pub use crate::document::{DocumentTree, OutlineHeading};
 pub use crate::draw::{DrawChildren, DrawCtx, Element};
-pub use crate::entity::{Entity, EntityField, Field, FieldKind, FieldValue, Records};
+pub use crate::entity::{
+    DecodeError, EntityField, EntityType, Field, FieldKind, FieldValue, Records, Tag, Wikilink,
+};
 pub use crate::mcp::{
     OpenFiles, OpenFilesArgs, Overview, OverviewArgs, PageUrl, PageUrlArgs, Search, SearchArgs,
     Tool, route,
 };
 pub use crate::parse::{BlockStream, Host, InlineStream, Never, Plain};
+pub use crate::query::{Direction, Entity, Filter, Query, Sort, filter};
 pub use crate::signals::DocumentChange;
 pub use crate::template::{BodyCtx, DefaultTemplate, DocumentMeta, HeadCtx, PageKind, Template};
 pub use crate::tree::{Align, BlockKind, Children, Content, InlineKind, KindRef, NodeRef, Parsed};
@@ -177,7 +181,7 @@ impl<P: Host> WikiBuilder<P> {
     /// Registers an entity type: the index keeps a table of its records,
     /// which the host's [`Host::extract`] pushes. Registering one twice, or
     /// two with the same name, fails `build`.
-    pub fn entity<T: Entity>(mut self) -> Self {
+    pub fn entity<T: EntityType>(mut self) -> Self {
         self.entities.push(entity::EntitySpec::of::<T>());
         self
     }
@@ -215,6 +219,12 @@ impl<P: Host> WikiBuilder<P> {
             .into_iter()
             .collect::<anyhow::Result<Vec<_>>>()?;
         for (i, spec) in entities.iter().enumerate() {
+            if entity::builtin_entities()
+                .iter()
+                .any(|b| b.name == spec.name)
+            {
+                anyhow::bail!("entity name {} is the library's own", spec.name);
+            }
             if entities[..i].iter().any(|other| other.name == spec.name) {
                 anyhow::bail!("entity {} is registered twice", spec.name);
             }

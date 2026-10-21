@@ -1,11 +1,11 @@
-//! `#[derive(Entity)]` for agent_wiki: a struct whose records the index
+//! `#[derive(EntityType)]` for agent_wiki: a struct whose records the index
 //! keeps in a table of their own.
 
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, LitInt, LitStr, parse_macro_input};
 
-/// Implements `agent_wiki::Entity` for a struct with named fields.
+/// Implements `agent_wiki::EntityType` for a struct with named fields.
 ///
 /// On the struct: `#[entity(name = "…", version = N)]`, both optional. The
 /// name defaults to the struct's name in snake case; the version to 0.
@@ -13,7 +13,7 @@ use syn::{Data, DeriveInput, Fields, LitInt, LitStr, parse_macro_input};
 /// On a field: `#[entity(index)]` for a b-tree index, `#[entity(fulltext)]`
 /// for the type's full-text index. Field types: `String`, integers, `f32`,
 /// `f64`, `bool`, and `Option` of those.
-#[proc_macro_derive(Entity, attributes(entity))]
+#[proc_macro_derive(EntityType, attributes(entity))]
 pub fn derive_entity(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match expand(input) {
@@ -40,13 +40,17 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         })?;
     }
     let Data::Struct(data) = &input.data else {
-        return Err(syn::Error::new_spanned(ident, "Entity needs a struct"));
+        return Err(syn::Error::new_spanned(ident, "EntityType needs a struct"));
     };
     let Fields::Named(named) = &data.fields else {
-        return Err(syn::Error::new_spanned(ident, "Entity needs named fields"));
+        return Err(syn::Error::new_spanned(
+            ident,
+            "EntityType needs named fields",
+        ));
     };
     let mut fields = Vec::new();
     let mut values = Vec::new();
+    let mut decode = Vec::new();
     for field in &named.named {
         let field_ident = field.ident.as_ref().expect("named field");
         let field_name = field_ident.to_string();
@@ -84,10 +88,17 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         values.push(quote! {
             ::agent_wiki::EntityField::value(&self.#field_ident)
         });
+        decode.push(quote! {
+            #field_ident: ::agent_wiki::EntityField::from_value(
+                values
+                    .next()
+                    .ok_or_else(|| ::agent_wiki::DecodeError::missing(#name, #field_name))?,
+            )?
+        });
     }
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     Ok(quote! {
-        impl #impl_generics ::agent_wiki::Entity for #ident #ty_generics #where_clause {
+        impl #impl_generics ::agent_wiki::EntityType for #ident #ty_generics #where_clause {
             const NAME: &'static str = #name;
             const VERSION: u32 = #version;
 
@@ -97,6 +108,14 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
             fn values(&self) -> ::std::vec::Vec<::agent_wiki::FieldValue> {
                 ::std::vec![#(#values),*]
+            }
+
+            fn from_values(
+                values: ::std::vec::Vec<::agent_wiki::FieldValue>,
+            ) -> ::std::result::Result<Self, ::agent_wiki::DecodeError> {
+                #[allow(unused_mut, unused_variables)]
+                let mut values = values.into_iter();
+                ::std::result::Result::Ok(Self { #(#decode),* })
             }
         }
     })

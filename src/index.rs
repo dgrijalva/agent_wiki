@@ -10,7 +10,8 @@ use libsql::{Builder, Connection, Row, Rows, TransactionBehavior, params};
 use tokio::sync::Mutex;
 
 use crate::IndexStorage;
-use crate::entity::{EntitySpec, FieldValue, Records};
+use crate::document::{DocumentTree, Extracted};
+use crate::entity::{EntitySpec, FieldValue, Records, Tag, Wikilink, builtin_entities};
 use crate::names::{FileKeys, LinkTarget, norm, path_to_url};
 use crate::parse::{Host, parse};
 
@@ -44,12 +45,12 @@ pub const AGENT_WIKI_APP_ID: i32 = 0x6177_696B;
 /// tracked file when the scan wrote the row, the file's `mtime` otherwise;
 /// the scan leaves a row whose `mtime` matches the file alone, so it keeps
 /// this across restarts); `summary` is the page's summary, `''` for none.
-/// A `wikilink` row is one counted wikilink, keyed by its ordinal; a `tag`
-/// row is one distinct lowercase tag of a page, holding its first inline
-/// ordinal, or NULL when it is only in frontmatter. An `entity_version` row
-/// is a registered entity type's stored version (`EntitySpec::version`); its
-/// tables are `entity_{name}` and, with full-text fields, `entity_{name}_fts`. `page_fts` indexes `page`'s title and body as external
-/// content, kept current by the triggers.
+/// An `entity_version` row is a registered entity type's stored version
+/// (`EntitySpec::version`); its tables are `entity_{name}` and, with
+/// full-text fields, `entity_{name}_fts`. Wikilinks and tags are the
+/// built-in entity types `wikilink` and `tag` (see `Wikilink`, `Tag`).
+/// `page_fts` indexes `page`'s title and body as external content, kept
+/// current by the triggers.
 const SCHEMA: &str = "
 CREATE TABLE meta (root TEXT NOT NULL);
 CREATE TABLE page (
@@ -69,12 +70,6 @@ CREATE INDEX page_key_full ON page(key_full);
 CREATE INDEX page_key_stripped ON page(key_stripped);
 CREATE INDEX page_folder ON page(folder);
 CREATE INDEX page_recent ON page(edited DESC, path);
-CREATE TABLE wikilink (source TEXT NOT NULL, ordinal INTEGER NOT NULL, key TEXT NOT NULL,
-    PRIMARY KEY (source, ordinal)) WITHOUT ROWID;
-CREATE INDEX wikilink_key ON wikilink(key);
-CREATE TABLE tag (source TEXT NOT NULL, tag TEXT NOT NULL, ordinal INTEGER,
-    PRIMARY KEY (source, tag)) WITHOUT ROWID;
-CREATE INDEX tag_tag ON tag(tag);
 CREATE TABLE entity_version (name TEXT PRIMARY KEY, version INTEGER NOT NULL) WITHOUT ROWID;
 CREATE VIRTUAL TABLE page_fts USING fts5(title, body, content='page', content_rowid='id',
     tokenize='unicode61 remove_diacritics 2');
@@ -93,28 +88,18 @@ END;
 /// The columns read into a [`PageRef`], in its field order.
 const PAGE_FIELDS: &str = "path, url, folder, title";
 
-/// Removes one page and its rows by exact path.
-const REMOVE_PAGE: [&str; 3] = [
-    "DELETE FROM page WHERE path = ?1 RETURNING path",
-    "DELETE FROM wikilink WHERE source = ?1",
-    "DELETE FROM tag WHERE source = ?1",
-];
+/// Removes one page by exact path; its records go with it.
+const REMOVE_PAGE: &str = "DELETE FROM page WHERE path = ?1 RETURNING path";
 
 /// Removes the page at `?1` and every page in the range `[?2, ?3)` (a
-/// folder's subtree, see [`subtree`]), with their rows.
-const REMOVE_PATH: [&str; 3] = [
-    "DELETE FROM page WHERE path = ?1 OR (path >= ?2 AND path < ?3) RETURNING path",
-    "DELETE FROM wikilink WHERE source = ?1 OR (source >= ?2 AND source < ?3)",
-    "DELETE FROM tag WHERE source = ?1 OR (source >= ?2 AND source < ?3)",
-];
+/// folder's subtree, see [`subtree`]); their records go with them.
+const REMOVE_PATH: &str =
+    "DELETE FROM page WHERE path = ?1 OR (path >= ?2 AND path < ?3) RETURNING path";
 
 /// Removes every page in the range `[?1, ?2)` (a folder's subtree, see
-/// [`subtree`]), with their rows; never a page at the folder's own path.
-const REMOVE_FOLDER: [&str; 3] = [
-    "DELETE FROM page WHERE path >= ?1 AND path < ?2 RETURNING path",
-    "DELETE FROM wikilink WHERE source >= ?1 AND source < ?2",
-    "DELETE FROM tag WHERE source >= ?1 AND source < ?2",
-];
+/// [`subtree`]), never a page at the folder's own path; their records go
+/// with them.
+const REMOVE_FOLDER: &str = "DELETE FROM page WHERE path >= ?1 AND path < ?2 RETURNING path";
 
 /// `mtimes_under` for a folder: paths in `[?1, ?2)`.
 const MTIMES_IN: &str = "SELECT path, mtime FROM page WHERE path >= ?1 AND path < ?2";
@@ -132,8 +117,8 @@ const RECENT_IN: &str = "SELECT path, url, folder, title, edited FROM page
      WHERE path >= ?1 AND path < ?2 ORDER BY edited DESC, path LIMIT ?3";
 
 /// `tag_cloud` in a folder's subtree `[?1, ?2)`.
-const CLOUD_IN: &str = "SELECT tag, count(*) FROM tag WHERE source >= ?1 AND source < ?2
-     GROUP BY tag";
+const CLOUD_IN: &str = "SELECT t.tag, count(*) FROM page p JOIN entity_tag t ON t.page = p.id
+     WHERE p.path >= ?1 AND p.path < ?2 GROUP BY t.tag";
 
 /// A full-text tier: pages matching the FTS5 query `?1`, best first.
 const BY_FTS: &str = "SELECT p.path, p.url, p.folder, p.title
@@ -202,18 +187,6 @@ struct PageRow {
     summary: String,
 }
 
-#[derive(Debug, Clone)]
-struct WikilinkRow {
-    key: String,
-    ordinal: i64,
-}
-
-#[derive(Debug, Clone)]
-struct TagRow {
-    tag: String,
-    ordinal: Option<i64>,
-}
-
 /// Every row of `rows`, mapped by `f`. Drains `rows`, so its statement is
 /// finished before the caller releases the connection.
 async fn collect<T>(mut rows: Rows, f: impl Fn(&Row) -> Result<T>) -> Result<Vec<T>> {
@@ -247,7 +220,7 @@ pub struct Index<P: Host> {
     conn: Arc<Mutex<Connection>>,
     /// The host's registered entity types.
     entities: Arc<Vec<EntitySpec>>,
-    /// Entity types whose tables were (re)created since the last scan, so
+    /// EntityType types whose tables were (re)created since the last scan, so
     /// the next scan extracts them from every file, even one it otherwise
     /// skips.
     stale: Arc<std::sync::Mutex<BTreeSet<&'static str>>>,
@@ -297,7 +270,9 @@ impl<P: Host> Index<P> {
         entities: Vec<EntitySpec>,
     ) -> Result<Index<P>> {
         let root = root.to_string_lossy();
-        let entities = Arc::new(entities);
+        let mut all = builtin_entities();
+        all.extend(entities);
+        let entities = Arc::new(all);
         match storage {
             IndexStorage::InMemory => {
                 let conn = Builder::new_local(":memory:").build().await?.connect()?;
@@ -344,7 +319,7 @@ impl<P: Host> Index<P> {
         host: Arc<P>,
         entities: Arc<Vec<EntitySpec>>,
     ) -> Result<Index<P>> {
-        // Entity records go with their page. Outside the transaction: the
+        // EntityType records go with their page. Outside the transaction: the
         // pragma does nothing inside one.
         conn.execute("PRAGMA foreign_keys = ON", ()).await?;
         let tx = conn
@@ -463,7 +438,7 @@ impl<P: Host> Index<P> {
             }) if mtime <= started => committed,
             _ => mtime.div_euclid(1_000_000_000),
         };
-        let (page, links, tags, records) = rows_for(&*self.host, rel, &source, mtime, edited);
+        let (page, records) = rows_for(&*self.host, rel, &source, mtime, edited);
         let conn = self.conn.lock().await;
         let tx = conn.transaction().await?;
         if scan.is_some() {
@@ -494,24 +469,6 @@ impl<P: Host> Index<P> {
             ],
         )
         .await?;
-        tx.execute("DELETE FROM wikilink WHERE source = ?1", [rel])
-            .await?;
-        for link in &links {
-            tx.execute(
-                "INSERT INTO wikilink (source, ordinal, key) VALUES (?1, ?2, ?3)",
-                params![rel, link.ordinal, link.key.as_str()],
-            )
-            .await?;
-        }
-        tx.execute("DELETE FROM tag WHERE source = ?1", [rel])
-            .await?;
-        for tag in &tags {
-            tx.execute(
-                "INSERT INTO tag (source, tag, ordinal) VALUES (?1, ?2, ?3)",
-                params![rel, tag.tag.as_str(), tag.ordinal],
-            )
-            .await?;
-        }
         write_records(&tx, rel, &self.entities, None, records).await?;
         tx.commit().await?;
         Ok(())
@@ -528,8 +485,7 @@ impl<P: Host> Index<P> {
     ) -> Result<()> {
         let source = tokio::fs::read_to_string(root.join(rel)).await?;
         let tree = parse(&*self.host, &source);
-        let mut records = Records::default();
-        self.host.extract(rel, &tree, &mut records);
+        let records = records_for(&*self.host, rel, &tree, &tree.extract());
         let conn = self.conn.lock().await;
         let tx = conn.transaction().await?;
         write_records(&tx, rel, &self.entities, Some(only), records).await?;
@@ -537,15 +493,37 @@ impl<P: Host> Index<P> {
         Ok(())
     }
 
+    /// The registered entity type named `name`.
+    pub(crate) fn entity(&self, name: &str) -> Result<&EntitySpec> {
+        match self.entities.iter().find(|spec| spec.name == name) {
+            Some(spec) => Ok(spec),
+            None => bail!("entity type {name} isn't registered"),
+        }
+    }
+
+    /// Runs a read-only query; each row's columns as values.
+    pub(crate) async fn select(
+        &self,
+        sql: &str,
+        values: Vec<FieldValue>,
+    ) -> Result<Vec<Vec<FieldValue>>> {
+        let params: Vec<libsql::Value> = values.into_iter().map(to_libsql).collect();
+        let conn = self.conn.lock().await;
+        let rows = conn.query(sql, params).await?;
+        collect(rows, |row| {
+            (0..row.column_count())
+                .map(|i| Ok(from_libsql(row.get_value(i)?)))
+                .collect()
+        })
+        .await
+    }
+
     /// Removes exactly the page at `rel`, if indexed, with its rows; true if
     /// there was one.
     pub async fn remove_page(&self, rel: &str) -> Result<bool> {
         let conn = self.conn.lock().await;
         let tx = conn.transaction().await?;
-        let [page, links, tags] = REMOVE_PAGE;
-        let removed = collect(tx.query(page, [rel]).await?, |_| Ok(())).await?;
-        tx.execute(links, [rel]).await?;
-        tx.execute(tags, [rel]).await?;
+        let removed = collect(tx.query(REMOVE_PAGE, [rel]).await?, |_| Ok(())).await?;
         tx.commit().await?;
         Ok(!removed.is_empty())
     }
@@ -557,10 +535,7 @@ impl<P: Host> Index<P> {
         let params = [rel_or_folder, low.as_str(), high.as_str()];
         let conn = self.conn.lock().await;
         let tx = conn.transaction().await?;
-        let [pages, links, tags] = REMOVE_PATH;
-        let removed = collect(tx.query(pages, params).await?, |row| Ok(row.get(0)?)).await?;
-        tx.execute(links, params).await?;
-        tx.execute(tags, params).await?;
+        let removed = collect(tx.query(REMOVE_PATH, params).await?, |row| Ok(row.get(0)?)).await?;
         tx.commit().await?;
         Ok(removed)
     }
@@ -573,10 +548,11 @@ impl<P: Host> Index<P> {
         let params = [low.as_str(), high.as_str()];
         let conn = self.conn.lock().await;
         let tx = conn.transaction().await?;
-        let [pages, links, tags] = REMOVE_FOLDER;
-        let removed = collect(tx.query(pages, params).await?, |row| Ok(row.get(0)?)).await?;
-        tx.execute(links, params).await?;
-        tx.execute(tags, params).await?;
+        let removed = collect(
+            tx.query(REMOVE_FOLDER, params).await?,
+            |row| Ok(row.get(0)?),
+        )
+        .await?;
         tx.commit().await?;
         Ok(removed)
     }
@@ -628,12 +604,13 @@ impl<P: Host> Index<P> {
 
     /// Pages containing a wikilink with this link key, with the ordinal of
     /// the first one, ordered by page path.
+    #[cfg(test)]
     pub async fn references(&self, link_key: &str) -> Result<Vec<(PageRef, i64)>> {
         let conn = self.conn.lock().await;
         let rows = conn
             .query(
                 "SELECT p.path, p.url, p.folder, p.title, min(w.ordinal)
-                 FROM wikilink w JOIN page p ON p.path = w.source
+                 FROM entity_wikilink w JOIN page p ON p.id = w.page
                  WHERE w.key = ?1 GROUP BY p.path ORDER BY p.path",
                 [link_key],
             )
@@ -643,12 +620,13 @@ impl<P: Host> Index<P> {
 
     /// Pages carrying `tag`, with the ordinal of the first inline occurrence
     /// (`None` when the tag is only in frontmatter), ordered by page path.
+    #[cfg(test)]
     pub async fn tagged(&self, tag: &str) -> Result<Vec<(PageRef, Option<i64>)>> {
         let conn = self.conn.lock().await;
         let rows = conn
             .query(
-                "SELECT p.path, p.url, p.folder, p.title, t.ordinal
-                 FROM tag t JOIN page p ON p.path = t.source
+                "SELECT p.path, p.url, p.folder, p.title, t.first
+                 FROM entity_tag t JOIN page p ON p.id = t.page
                  WHERE t.tag = ?1 ORDER BY p.path",
                 [tag.to_lowercase()],
             )
@@ -692,8 +670,8 @@ impl<P: Host> Index<P> {
             let rows = conn
                 .query(
                     &format!(
-                        "SELECT {PAGE_FIELDS} FROM page WHERE path IN
-                             (SELECT source FROM tag WHERE tag IN ({placeholders}))"
+                        "SELECT {PAGE_FIELDS} FROM page WHERE id IN
+                             (SELECT page FROM entity_tag WHERE tag IN ({placeholders}))"
                     ),
                     tags,
                 )
@@ -783,7 +761,7 @@ impl<P: Host> Index<P> {
         let rows = {
             let conn = self.conn.lock().await;
             let rows = if folder.is_empty() {
-                conn.query("SELECT tag, count(*) FROM tag GROUP BY tag", ())
+                conn.query("SELECT tag, count(*) FROM entity_tag GROUP BY tag", ())
                     .await?
             } else {
                 let (low, high) = subtree(folder);
@@ -835,7 +813,10 @@ impl<P: Host> Index<P> {
         .collect();
         let rows = conn
             .query(
-                &format!("SELECT source, tag FROM tag WHERE source IN ({placeholders})"),
+                &format!(
+                    "SELECT p.path, t.tag FROM entity_tag t JOIN page p ON p.id = t.page
+                     WHERE p.path IN ({placeholders})"
+                ),
                 paths.to_vec(),
             )
             .await?;
@@ -894,7 +875,7 @@ async fn rebuild(conn: &Connection, root: &str) -> Result<()> {
         conn.execute(&format!("DROP TABLE {}", quoted(&name)), ())
             .await?;
     }
-    // Dropping a table drops its indexes and triggers. Entity record tables
+    // Dropping a table drops its indexes and triggers. EntityType record tables
     // go before `page`, which they reference.
     let tables = texts(
         conn,
@@ -938,11 +919,10 @@ fn rows_for<P: Host>(
     source: &str,
     mtime: i64,
     edited: i64,
-) -> (PageRow, Vec<WikilinkRow>, Vec<TagRow>, Records) {
+) -> (PageRow, Records) {
     let tree = parse(host, source);
     let ex = tree.extract();
-    let mut records = Records::default();
-    host.extract(rel, &tree, &mut records);
+    let records = records_for(host, rel, &tree, &ex);
     let name = rel.rsplit('/').next().unwrap_or(rel);
     let stem = name.strip_suffix(".md").unwrap_or(name);
     let keys = FileKeys::from_rel(rel);
@@ -959,20 +939,23 @@ fn rows_for<P: Host>(
         edited,
         summary: ex.summary(),
     };
-    let links = ex
-        .wikilinks
-        .iter()
-        .enumerate()
-        .filter_map(|(n, raw)| {
-            let target = LinkTarget::parse(raw)?;
-            Some(WikilinkRow {
-                key: target.name_key,
-                ordinal: n as i64,
-            })
-        })
-        .collect();
-    // One row per distinct tag, carrying its first inline ordinal (`None`
-    // when it is only in frontmatter).
+    (page, records)
+}
+
+/// The records of a parsed page: the built-in wikilinks and tags, then the
+/// host's.
+fn records_for<P: Host>(host: &P, rel: &str, tree: &DocumentTree<P>, ex: &Extracted) -> Records {
+    let mut records = Records::default();
+    // Every counted wikilink, so a record's ordinal is the link's; one with
+    // no target has the key `""`, which no page has.
+    for raw in &ex.wikilinks {
+        let key = LinkTarget::parse(raw)
+            .map(|t| t.name_key)
+            .unwrap_or_default();
+        records.push(Wikilink { key });
+    }
+    // One per distinct tag, carrying its first inline ordinal (`None` when
+    // it is only in frontmatter).
     let inline = ex
         .inline_tags
         .iter()
@@ -980,12 +963,13 @@ fn rows_for<P: Host>(
         .map(|(n, tag)| (tag.clone(), Some(n as i64)));
     let frontmatter = ex.frontmatter_tags.iter().map(|t| (t.to_lowercase(), None));
     let mut seen = BTreeSet::new();
-    let tags = inline
-        .chain(frontmatter)
-        .filter(|(tag, _)| seen.insert(tag.clone()))
-        .map(|(tag, ordinal)| TagRow { tag, ordinal })
-        .collect();
-    (page, links, tags, records)
+    for (tag, first) in inline.chain(frontmatter) {
+        if seen.insert(tag.clone()) {
+            records.push(Tag { tag, first });
+        }
+    }
+    host.extract(rel, tree, &mut records);
+    records
 }
 
 /// Replaces the stored records of the page at `rel` with `records`, for
@@ -1029,16 +1013,32 @@ async fn write_records(
             libsql::Value::Integer(page),
             libsql::Value::Integer(*ordinal),
         ];
-        params.extend(values.into_iter().map(|value| match value {
-            FieldValue::Null => libsql::Value::Null,
-            FieldValue::Text(text) => libsql::Value::Text(text),
-            FieldValue::Integer(n) => libsql::Value::Integer(n),
-            FieldValue::Real(x) => libsql::Value::Real(x),
-        }));
+        params.extend(values.into_iter().map(to_libsql));
         conn.execute(&spec.insert(), params).await?;
         *ordinal += 1;
     }
     Ok(())
+}
+
+fn to_libsql(value: FieldValue) -> libsql::Value {
+    match value {
+        FieldValue::Null => libsql::Value::Null,
+        FieldValue::Text(text) => libsql::Value::Text(text),
+        FieldValue::Integer(n) => libsql::Value::Integer(n),
+        FieldValue::Real(x) => libsql::Value::Real(x),
+    }
+}
+
+fn from_libsql(value: libsql::Value) -> FieldValue {
+    match value {
+        libsql::Value::Null => FieldValue::Null,
+        libsql::Value::Text(text) => FieldValue::Text(text),
+        libsql::Value::Integer(n) => FieldValue::Integer(n),
+        libsql::Value::Real(x) => FieldValue::Real(x),
+        libsql::Value::Blob(bytes) => {
+            FieldValue::Text(String::from_utf8_lossy(&bytes).into_owned())
+        }
+    }
 }
 
 /// Brings the entity tables in line with `entities` in the open
@@ -1976,8 +1976,8 @@ mod tests {
         let counts = async || {
             [
                 row_count(&index, "page").await,
-                row_count(&index, "wikilink").await,
-                row_count(&index, "tag").await,
+                row_count(&index, "entity_wikilink").await,
+                row_count(&index, "entity_tag").await,
             ]
         };
 
@@ -2280,8 +2280,8 @@ mod tests {
         }
         let counts = [
             row_count(index, "page").await,
-            row_count(index, "wikilink").await,
-            row_count(index, "tag").await,
+            row_count(index, "entity_wikilink").await,
+            row_count(index, "entity_tag").await,
         ];
         (resolved, tagged, searched, listings, counts)
     }
@@ -2576,15 +2576,16 @@ mod tests {
         let (low, high) = subtree("Projects");
         let range = [low.as_str(), high.as_str()];
         let path_and_range = ["Projects", low.as_str(), high.as_str()];
-        let mut statements: Vec<(&str, Vec<&str>)> = Vec::new();
-        statements.extend(REMOVE_PAGE.map(|sql| (sql, vec!["Home.md"])));
-        statements.extend(REMOVE_PATH.map(|sql| (sql, path_and_range.to_vec())));
-        statements.extend(REMOVE_FOLDER.map(|sql| (sql, range.to_vec())));
-        statements.push((MTIMES_IN, range.to_vec()));
-        statements.push((LISTING_PAGES, vec!["Projects"]));
-        statements.push((LISTING_DEEPER_IN, path_and_range.to_vec()));
-        statements.push((RECENT_IN, vec![low.as_str(), high.as_str(), "10"]));
-        statements.push((CLOUD_IN, range.to_vec()));
+        let statements: Vec<(&str, Vec<&str>)> = vec![
+            (REMOVE_PAGE, vec!["Home.md"]),
+            (REMOVE_PATH, path_and_range.to_vec()),
+            (REMOVE_FOLDER, range.to_vec()),
+            (MTIMES_IN, range.to_vec()),
+            (LISTING_PAGES, vec!["Projects"]),
+            (LISTING_DEEPER_IN, path_and_range.to_vec()),
+            (RECENT_IN, vec![low.as_str(), high.as_str(), "10"]),
+            (CLOUD_IN, range.to_vec()),
+        ];
         let conn = index.conn.lock().await;
         for (sql, params) in statements {
             let rows = conn
@@ -2674,7 +2675,7 @@ mod tests {
         version: u32,
     }
 
-    #[derive(crate::Entity)]
+    #[derive(crate::EntityType)]
     struct TicketRef {
         #[entity(index)]
         key: String,
@@ -2683,7 +2684,7 @@ mod tests {
         done: Option<bool>,
     }
 
-    #[derive(crate::Entity)]
+    #[derive(crate::EntityType)]
     #[entity(name = "page_fact")]
     struct Fact {
         tickets: usize,
@@ -2692,16 +2693,20 @@ mod tests {
     /// `TicketRef` with another version, as after an extraction change.
     struct TicketRefV1(TicketRef);
 
-    impl crate::Entity for TicketRefV1 {
+    impl crate::EntityType for TicketRefV1 {
         const NAME: &'static str = "ticket_ref";
         const VERSION: u32 = 1;
 
         fn fields() -> Vec<crate::Field> {
-            <TicketRef as crate::Entity>::fields()
+            <TicketRef as crate::EntityType>::fields()
         }
 
         fn values(&self) -> Vec<FieldValue> {
-            crate::Entity::values(&self.0)
+            crate::EntityType::values(&self.0)
+        }
+
+        fn from_values(values: Vec<FieldValue>) -> Result<Self, crate::DecodeError> {
+            <TicketRef as crate::EntityType>::from_values(values).map(TicketRefV1)
         }
     }
 
@@ -2849,8 +2854,9 @@ mod tests {
         let index = Index::open_with(&storage, &root, Arc::new(EntityHost { version: 0 }), vec![])
             .await
             .unwrap();
-        let tables = "SELECT count(*) FROM sqlite_schema WHERE name LIKE 'entity\\_%' ESCAPE '\\'
-             AND name != 'entity_version'";
+        let tables = "SELECT count(*) FROM sqlite_schema
+             WHERE name LIKE 'entity\\_ticket\\_ref%' ESCAPE '\\'
+                OR name LIKE 'entity\\_page\\_fact%' ESCAPE '\\'";
         assert_eq!(query_i64(&index, tables).await, Some(0));
     }
 }

@@ -59,3 +59,21 @@ In: every design item from the 2026-10-21 session except what the design defers 
 ## Not in this branch
 
 Querying entity types; mixed search; semantic indexing; the query string in the URL key; custom pages in `open_files`; backlinks as a `Document` accessor (no use case yet).
+
+## Record queries (added 2026-10-21)
+
+Design: `docs/design/agent_wiki.md` → Host entity types → Querying entity types.
+
+### 8. Record queries
+
+- Dependency: `sea-query = { version = "1.0.2", default-features = false, features = ["backend-sqlite", "thread-safe"] }`, private.
+- [PROVISIONAL: `wiki.query::<E>()` returns a `Query<P, E>`: `filter(f)` (repeated calls AND), `under(folder)`, `document(path)`, `on_pages_with::<T>(f)`, `order_by(Sort, Direction)` (repeated calls append; `Sort::{Edited, Path, Ordinal, Field(name)}`), `limit(n)`, `offset(n)`, then `fetch().await -> Result<Vec<Entity<E>>>`. With no `order_by`: page path, then ordinal.]
+- [PROVISIONAL: filters are free functions in `agent_wiki::filter` (`eq(field, value)` … `matches(field, query)`), combined with `Filter::and`/`or`/`not`. A `Filter` is our own tree, compiled to sea-query against the queried type's table when the query runs, so one filter works for `on_pages_with` too. An unknown field, `matches` on a field that isn't full-text, or querying an unregistered type, is an error from `fetch`. Values are `impl Into<FieldValue>`.]
+- [PROVISIONAL: `Entity<E>` has getters `id()`, `ordinal()`, `path()`, `url()`, `title()`, `folder()`, `edited()`, `record()`, and `into_record()`. No `document()`: `wiki.lookup(entity.path())` loads it.]
+- The derive also generates decoding a row into `E` (`Entity::from_values`, `EntityField::from_value`).
+
+### 9. Built-ins on the mechanism
+
+- [PROVISIONAL: public entity types `Wikilink { key }` and `Tag { tag, first: Option<i64> }`, always registered first; hosts can use them in `on_pages_with`. A `Wikilink` record is pushed for every counted wikilink, so its record ordinal is the drawn `wl-{n}` (key `""` for one with no target). A `Tag` record is one per distinct tag on the page; `first` is the first inline occurrence's ordinal, drawn as `tag-{n}`, or `None` when it is only in frontmatter.]
+- The `wikilink` and `tag` tables and their remove statements go; records cascade with their page.
+- `Wiki::tagged`, `Wiki::link_target`'s references, and a document's tags use record queries. The tag cloud, search's tag tier, and `Index::details` stay internal SQL, now against `entity_tag`.

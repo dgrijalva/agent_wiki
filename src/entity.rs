@@ -1,6 +1,6 @@
 //! Host entity types: records a host extracts from each document, each type
 //! stored in its own table with a schema derived from the type
-//! (`#[derive(Entity)]`).
+//! (`#[derive(EntityType)]`).
 
 use anyhow::{Result, bail};
 
@@ -9,7 +9,7 @@ use crate::index::fnv1a;
 /// A type of record a host extracts from documents and the index stores;
 /// usually derived. Registered with
 /// [`WikiBuilder::entity`](crate::WikiBuilder::entity).
-pub trait Entity: Send + 'static {
+pub trait EntityType: Send + 'static {
     /// Names the type's tables, `entity_{NAME}`: lowercase letters, digits
     /// and `_`.
     const NAME: &'static str;
@@ -17,10 +17,38 @@ pub trait Entity: Send + 'static {
     /// changing, such as an extraction rule, so stored records are rebuilt.
     const VERSION: u32;
 
-    /// The fields, in the order [`values`](Entity::values) gives them.
+    /// The fields, in the order [`values`](EntityType::values) gives them.
     fn fields() -> Vec<Field>;
 
     fn values(&self) -> Vec<FieldValue>;
+
+    /// A record from its field values, in [`fields`](EntityType::fields) order.
+    fn from_values(values: Vec<FieldValue>) -> Result<Self, DecodeError>
+    where
+        Self: Sized;
+}
+
+/// A stored value that doesn't fit the field it is read into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodeError(pub String);
+
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for DecodeError {}
+
+impl DecodeError {
+    /// For a derived `from_values` given too few values.
+    pub fn missing(entity: &str, field: &str) -> DecodeError {
+        DecodeError(format!("entity {entity}: no value for field {field}"))
+    }
+}
+
+fn mismatch(want: &str, got: &FieldValue) -> DecodeError {
+    DecodeError(format!("expected {want}, found {got:?}"))
 }
 
 /// A field of an entity type, as a column.
@@ -54,11 +82,13 @@ pub enum FieldValue {
 }
 
 /// A Rust type an entity field can have.
-pub trait EntityField {
+pub trait EntityField: Sized {
     const KIND: FieldKind;
     const OPTIONAL: bool = false;
 
     fn value(&self) -> FieldValue;
+
+    fn from_value(value: FieldValue) -> Result<Self, DecodeError>;
 }
 
 impl EntityField for String {
@@ -67,6 +97,13 @@ impl EntityField for String {
     fn value(&self) -> FieldValue {
         FieldValue::Text(self.clone())
     }
+
+    fn from_value(value: FieldValue) -> Result<Self, DecodeError> {
+        match value {
+            FieldValue::Text(text) => Ok(text),
+            other => Err(mismatch("text", &other)),
+        }
+    }
 }
 
 impl EntityField for bool {
@@ -74,6 +111,13 @@ impl EntityField for bool {
 
     fn value(&self) -> FieldValue {
         FieldValue::Integer(i64::from(*self))
+    }
+
+    fn from_value(value: FieldValue) -> Result<Self, DecodeError> {
+        match value {
+            FieldValue::Integer(n) => Ok(n != 0),
+            other => Err(mismatch("a bool", &other)),
+        }
     }
 }
 
@@ -87,6 +131,15 @@ macro_rules! integer_fields {
             fn value(&self) -> FieldValue {
                 FieldValue::Integer(i64::try_from(*self).unwrap_or(i64::MAX))
             }
+
+            #[allow(clippy::unnecessary_fallible_conversions)]
+            fn from_value(value: FieldValue) -> Result<Self, DecodeError> {
+                match value {
+                    FieldValue::Integer(n) => <$t>::try_from(n)
+                        .map_err(|_| DecodeError(format!("{n} doesn't fit {}", stringify!($t)))),
+                    other => Err(mismatch("an integer", &other)),
+                }
+            }
         }
     )*};
 }
@@ -99,6 +152,15 @@ impl EntityField for f64 {
     fn value(&self) -> FieldValue {
         FieldValue::Real(*self)
     }
+
+    fn from_value(value: FieldValue) -> Result<Self, DecodeError> {
+        match value {
+            FieldValue::Real(x) => Ok(x),
+            // SQLite stores a REAL with no fraction as an integer.
+            FieldValue::Integer(n) => Ok(n as f64),
+            other => Err(mismatch("a number", &other)),
+        }
+    }
 }
 
 impl EntityField for f32 {
@@ -106,6 +168,10 @@ impl EntityField for f32 {
 
     fn value(&self) -> FieldValue {
         FieldValue::Real(f64::from(*self))
+    }
+
+    fn from_value(value: FieldValue) -> Result<Self, DecodeError> {
+        f64::from_value(value).map(|x| x as f32)
     }
 }
 
@@ -119,6 +185,55 @@ impl<T: EntityField> EntityField for Option<T> {
             None => FieldValue::Null,
         }
     }
+
+    fn from_value(value: FieldValue) -> Result<Self, DecodeError> {
+        match value {
+            FieldValue::Null => Ok(None),
+            value => T::from_value(value).map(Some),
+        }
+    }
+}
+
+impl From<&str> for FieldValue {
+    fn from(text: &str) -> Self {
+        FieldValue::Text(text.to_string())
+    }
+}
+
+impl From<String> for FieldValue {
+    fn from(text: String) -> Self {
+        FieldValue::Text(text)
+    }
+}
+
+impl From<bool> for FieldValue {
+    fn from(b: bool) -> Self {
+        FieldValue::Integer(i64::from(b))
+    }
+}
+
+impl From<f64> for FieldValue {
+    fn from(x: f64) -> Self {
+        FieldValue::Real(x)
+    }
+}
+
+macro_rules! integer_values {
+    ($($t:ty),*) => {$(
+        impl From<$t> for FieldValue {
+            fn from(n: $t) -> Self {
+                FieldValue::Integer(i64::from(n))
+            }
+        }
+    )*};
+}
+
+integer_values!(i8, i16, i32, i64, u8, u16, u32);
+
+impl<T: Into<FieldValue>> From<Option<T>> for FieldValue {
+    fn from(value: Option<T>) -> Self {
+        value.map_or(FieldValue::Null, Into::into)
+    }
 }
 
 /// The records extracted from one document; see
@@ -131,9 +246,38 @@ pub struct Records {
 impl Records {
     /// Adds a record. One of a type that isn't registered is logged and
     /// dropped when the document is stored.
-    pub fn push<T: Entity>(&mut self, record: T) {
+    pub fn push<T: EntityType>(&mut self, record: T) {
         self.records.push((T::NAME, record.values()));
     }
+}
+
+/// A wikilink on a page, by its link key (`""` for one with no target). Its
+/// ordinal is the link's place among the page's wikilinks, which the page
+/// draws as `wl-{n}`.
+#[derive(crate::EntityType, Debug, Clone, PartialEq, Eq)]
+#[entity(name = "wikilink")]
+pub struct Wikilink {
+    #[entity(index)]
+    pub key: String,
+}
+
+/// A distinct tag on a page, lowercase. `first` is the ordinal of its first
+/// inline use, which the page draws as `tag-{n}`; `None` when the tag is
+/// only in the frontmatter.
+#[derive(crate::EntityType, Debug, Clone, PartialEq, Eq)]
+#[entity(name = "tag")]
+pub struct Tag {
+    #[entity(index)]
+    pub tag: String,
+    pub first: Option<i64>,
+}
+
+/// The library's own entity types, always registered.
+pub(crate) fn builtin_entities() -> Vec<EntitySpec> {
+    vec![
+        EntitySpec::of::<Wikilink>().expect("valid"),
+        EntitySpec::of::<Tag>().expect("valid"),
+    ]
 }
 
 /// A registered entity type, as the index needs it.
@@ -145,7 +289,7 @@ pub(crate) struct EntitySpec {
 }
 
 impl EntitySpec {
-    pub(crate) fn of<T: Entity>() -> Result<EntitySpec> {
+    pub(crate) fn of<T: EntityType>() -> Result<EntitySpec> {
         let spec = EntitySpec {
             name: T::NAME,
             version: T::VERSION,
@@ -180,6 +324,10 @@ impl EntitySpec {
             }
         }
         Ok(spec)
+    }
+
+    pub(crate) fn field(&self, name: &str) -> Option<&Field> {
+        self.fields.iter().find(|f| f.name == name)
     }
 
     pub(crate) fn table(&self) -> String {
@@ -302,7 +450,7 @@ mod tests {
         done: bool,
     }
 
-    impl Entity for Ticket {
+    impl EntityType for Ticket {
         const NAME: &'static str = "ticket";
         const VERSION: u32 = 0;
 
@@ -334,6 +482,15 @@ mod tests {
 
         fn values(&self) -> Vec<FieldValue> {
             vec![self.id.value(), self.status.value(), self.done.value()]
+        }
+
+        fn from_values(values: Vec<FieldValue>) -> Result<Self, DecodeError> {
+            let mut values = values.into_iter();
+            Ok(Ticket {
+                id: String::from_value(values.next().unwrap())?,
+                status: Option::from_value(values.next().unwrap())?,
+                done: bool::from_value(values.next().unwrap())?,
+            })
         }
     }
 

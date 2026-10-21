@@ -21,6 +21,7 @@ libsql = { version = "0.9.30", default-features = false, features = ["core"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 nom = "8"
+sea-query = { version = "1.0.2", default-features = false, features = ["backend-sqlite", "thread-safe"] }
 rmcp = { version = "3.6", features = ["transport-streamable-http-server"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
