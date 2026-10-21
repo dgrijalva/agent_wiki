@@ -13,24 +13,27 @@ Early prototype. The API will change.
 - **Tags** go to a tag page listing every page that uses them.
 - **Search** over titles, tags and body text, ranked in that order.
 - **Folder index pages** list recently edited pages below them, then the folder's subfolders and pages with each page's summary, edit date and tags, then the top tags below them.
-- **Live updates:** an open page updates in place when its file changes on disk.
+- **Live updates:** an open page updates in place when its file changes on disk, or when the host signals it.
 - **Links:** headings are linkable, `[[Page#Heading]]` jumps to the heading, `#:N` links to line N of the page's source, and `{base}/foo/bar.md` reaches the page at `{base}/foo/bar`.
 - **Images** and ordinary links resolve relative to the page, or from the root with a leading `/`, and never leave the root folder.
 - **Styling:** a built-in stylesheet with dark mode. A host stylesheet can be layered on top or replace it.
 - **Startup is immediate.** The folder is indexed in the background while pages are served.
 - **MCP server** for agents: search, document overviews, links into the web view, and what the user has open and selected. See [MCP](#mcp).
+- **Layered API** for hosts: the whole wiki as a router, a page template, replaceable page bodies, page components, and the documents and index as data, down to the host's own indexed record types. See [Extending with a host](#extending-with-a-host).
 
 ## Quick start
 
 ```sh
-cargo run -- <folder> [--port N] [--index <path>]
+cargo run -- <folder> [--port N] [--index <path>] [--reindex]
 ```
 
 Serves on `127.0.0.1`, port 3000 by default. Ctrl-C starts a graceful shutdown; a second Ctrl-C quits.
 
 ### Index
 
-The index of links, tags and search text is kept in memory by default and rebuilt on every start. `--index <path>` keeps it on disk in the database file `<path>` instead, so it persists across runs.
+The index of links, tags and search text is kept in memory by default and rebuilt on every start. `--index <path>` keeps it on disk in the database file `<path>` instead, so it persists across runs. `--reindex` rebuilds it from the files at startup, in the background.
+
+The index is disposable: it holds nothing that isn't derived from the files, and a library update can rebuild it at any time.
 
 ## MCP
 
@@ -65,6 +68,17 @@ let app = app.merge(wiki.router());
 
 Every generated URL carries the base path. The wiki's own routes live under `{base}/_wiki/`, including the MCP endpoint.
 
+A host's own routes stay outside the wiki, but can draw their pages through it, with the wiki's template, styles and live updates:
+
+```rust
+let recent = RecentlyEdited::load(&projects, 10).await?; // a library component
+let html = wiki
+    .custom_page(&request, "Projects")
+    .live() // refetches whenever the host calls wiki.signal("/projects")
+    .draw(|ctx| html! { h1 { "Projects" } (ctx.draw(&recent)) })
+    .await;
+```
+
 ### MCP tools in your own server
 
 The built-in tools are exported, so a host can serve them from its own rmcp server (`agent_wiki::rmcp` is re-exported). `wiki.tools()` returns the default collection, generic over the server type, to edit or merge:
@@ -83,7 +97,8 @@ A host type, passed with `.host(host, template)`, customises parsing and present
 
 - **`Host`** claims syntax during parsing. For example, a host can turn `[[ABC-123]]` into a ticket element instead of a wikilink.
 - **`Element`** draws the host's elements to HTML.
-- **`Template`** provides `head` and `body` hooks that wrap every page, for the host's own navigation and chrome. A custom `body` places the built-in chrome itself: `ctx.search_box()`, `ctx.breadcrumbs()`, `ctx.copy_path()`, `ctx.tags()`, `ctx.frontmatter_table()`.
+- **`Element`** is also how everything draws: the library's page components (`SearchBox`, `Breadcrumbs`, `RecentlyEdited`, `Contents`, `TagCloud`, …) and page bodies (`FolderIndexBody`, `SearchBody`, …) are elements, loaded from the data layer and drawn where the host places them.
+- **`Template`** provides `head` and `body` hooks that wrap every page, for the host's own navigation and chrome. A custom `body` places the built-in chrome itself: `ctx.search_box()`, `ctx.breadcrumbs()`, `ctx.copy_path()`, `ctx.tags()`, `ctx.frontmatter_table()`. It can also replace a page's body, building its own from `ctx.kind()` and `ctx.wiki()`.
 
 ```rust
 struct SampleHost;
@@ -101,7 +116,38 @@ impl Host for SampleHost {
 }
 ```
 
-The full sketch is in [`docs/design/example.rs`](docs/design/example.rs), and the design in [`docs/design/`](docs/design/), starting from [`agent_wiki.md`](docs/design/agent_wiki.md); the MCP server is in [`mcp.md`](docs/design/mcp.md).
+### The documents as data
+
+- **Folders and documents:** `wiki.root()`, `wiki.lookup(path)`, `wiki.search(query, SearchOpts { limit })`; a `Folder`'s `documents()`, `recent(n)`, `tags(n)`, `walk()`; a `Document`'s `title()`, `tags()`, `summary()`, `outline()`, its parsed `tree()`, and `body().await` to draw it.
+- **Watches:** `document.watch()` (modified or removed) and `folder.watch()` (anything in its subtree), as `tokio::sync::watch` receivers.
+- **Signals:** `wiki.signal(path)` makes every open instance of the page at that URL path refetch itself, whether it's a wiki page or the host's own.
+
+### The host's own record types
+
+A host can index its own records alongside the documents. `#[derive(EntityType)]` gives a struct its own table; `#[entity(index)]` and `#[entity(fulltext)]` mark fields for a b-tree or full-text index. `Host::extract` pushes records from each parsed document, and the type is registered with `.entity::<T>()`. A changed type is rebuilt from the files automatically.
+
+```rust
+#[derive(EntityType)]
+struct Mention {
+    #[entity(index)]
+    who: String,
+    #[entity(fulltext)]
+    text: String,
+}
+
+// Tickets on pages where dave is mentioned, recent first.
+let tickets = wiki
+    .query::<Ticket>()
+    .on_pages_with::<Mention>(filter::eq("who", "dave"))
+    .order_by(Sort::Edited, Direction::Desc)
+    .limit(20)
+    .fetch()
+    .await?; // Vec<Entity<Ticket>>: each record with its page's path, title and edit time
+```
+
+Filters cover field comparisons (`eq`, `lt`, `is_in`, `between`, `like`, `is_null`, …), `and`/`or`/`not`, and `matches` for full-text fields. The built-in wikilinks and tags are record types too (`Wikilink`, `Tag`), so a query can filter on them.
+
+The full sketch is in [`docs/design/example.rs`](docs/design/example.rs), and the design in [`docs/design/`](docs/design/), starting from [`agent_wiki.md`](docs/design/agent_wiki.md); the data model is in [`data.md`](docs/design/data.md), and the MCP server in [`mcp.md`](docs/design/mcp.md).
 
 ## Planned features
 

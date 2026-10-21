@@ -1,5 +1,6 @@
 // Sketch of the host API. Not compiled.
-// See docs/design/agent_wiki.md → Host API → Parsing and extraction.
+// See docs/design/agent_wiki.md → Host API, and docs/design/data.md.
+// Shapes the design leaves to implementation are marked [PROVISIONAL].
 //
 // The core move: a node's *kind* holds no children, and children are an
 // opaque library type. The API never commits to nesting; storage is an arena
@@ -69,6 +70,10 @@ pub trait Host: Sized + Send + Sync + 'static {
     fn parse_inline(&self, s: &mut InlineStream<'_, Self>) -> Option<Parsed<InlineKind<Self>>> {
         None
     }
+
+    /// Pure, like the parse hooks: walks the built tree and pushes the
+    /// records of the host's entity types. [PROVISIONAL: the signature.]
+    fn extract(&self, path: &str, doc: &DocumentTree<Self>, out: &mut Records) {}
 }
 
 /// The default: a wiki with no host syntax.
@@ -159,9 +164,11 @@ pub trait Template<P: Host>: Send + Sync + 'static {
     /// `suppress_default_styles()`.
     fn head(&self, cx: &mut HeadCx<'_, P>) -> impl Future<Output = maud::Markup> + Send;
 
-    /// Wrapped in the htmx root. Must embed `content(cx)`. A host that
-    /// overrides this places the built-in chrome itself (`cx.search_box()`,
-    /// `cx.breadcrumbs()`, `cx.tags()`, `cx.frontmatter()`).
+    /// Wrapped in the htmx root. Normally embeds `content(cx)`, the page's
+    /// body; it can draw its own instead, from `cx.kind()` and the data in
+    /// `cx.wiki()`. A host that overrides this places the built-in chrome
+    /// itself (`cx.search_box()`, `cx.breadcrumbs()`, `cx.tags()`,
+    /// `cx.frontmatter()`), and draws components with `cx.draw(&element)`.
     fn body(&self, cx: &PageCx<'_, P>, content: PageContent<'_, P>)
         -> impl Future<Output = maud::Markup> + Send;
 }
@@ -169,8 +176,10 @@ pub trait Template<P: Host>: Send + Sync + 'static {
 /// Today's page.
 pub struct DefaultTemplate;
 
-// PageCx: kind (Document { meta, frontmatter } | Folder | Search { query } |
-//         Tag | Disambiguation | NotFound), request(), chrome accessors.
+// PageCx: kind (Document { meta, frontmatter } | FolderIndex { path } |
+//         Search { query } | Tag { tag } | Disambiguation { target } |
+//         NotFound | Custom), request(), wiki(), draw(&element), chrome
+//         accessors.
 
 // ─── Reading and editing: handles and methods, never public fields ──────────
 // Editing is not needed for the first host integration.
@@ -183,6 +192,47 @@ impl<'a, P: Host> NodeRef<'a, P> {
     pub fn parent(&self) -> Option<NodeRef<'a, P>>;
     pub fn next_sibling(&self) -> Option<NodeRef<'a, P>>;
 }
+
+// ─── Data and entity types (docs/design/data.md) ───────────────────────────
+// [PROVISIONAL: the names and signatures below.]
+
+// wiki.root() -> Folder<P>; wiki.lookup(path) -> Option<Entry<P>>
+//   (Entry::Folder | Entry::Document); wiki.search(q, SearchOpts { limit })
+// Folder: folders(), documents(), recent(n), tags(n), search(q, opts),
+//   walk(), watch() -> watch::Receiver<u64>
+// Document: title(), tags(), summary(), edited(), outline(), tree(),
+//   body().await -> DocumentBody (an Element), watch()
+
+/// An entity type: a table of its own, records pushed by `Host::extract`,
+/// registered with `WikiBuilder::entity::<Mention>()`.
+#[derive(EntityType)]
+struct Mention {
+    #[entity(index)]
+    who: String,
+    #[entity(fulltext)]
+    text: String,
+}
+
+// "Find me all the tickets on pages where I'm mentioned", recent first:
+//
+// let tickets: Vec<Entity<Ticket>> = wiki
+//     .query::<Ticket>()
+//     .under("projects")
+//     .on_pages_with::<Mention>(filter::eq("who", "dave"))
+//     .order_by(Sort::Edited, Direction::Desc)
+//     .limit(20)
+//     .fetch()
+//     .await?;
+//
+// Each Entity<Ticket> carries its page: path(), url(), title(), edited().
+
+// A host's own route, drawn like a wiki page, refetched on wiki.signal(path):
+//
+// let recent = RecentlyEdited::load(&projects_folder, 10).await?;
+// wiki.custom_page(&request, "Projects")
+//     .live()
+//     .draw(|cx| html! { (cx.draw(&recent)) })
+//     .await
 
 // ─── Example: a host with tickets and markers ───────────────────────────────
 

@@ -69,11 +69,11 @@ agent_wiki serves an MCP server so agents can work with the wiki. (Dave, 2026-10
 
 - **Input:** a query string, and an optional folder. "Enough for now." (Dave, 2026-10-20)
 - **Output:** whatever is most likely to be useful to the agent without taking up too many tokens. (Dave, 2026-10-20)
-  [PROVISIONAL: one block per result, in rank order. Path first, since the agent reads files by path; tags only when there are some; the summary line only when there is one. No URLs.
+  [PROVISIONAL: one block per result, in rank order. Path first, since the agent reads files by path; tags only when there are some; the summary line only when there is one. No URLs.]
   ```
   projects/foo.md — Foo Project  #tag1  #tag2
     First 280 chars of summary…
-  ```]
+  ```
   [PROVISIONAL: no limit on the number of results.]
   [PROVISIONAL: an empty result says "No matches."]
 - **Results while the index is still filling are fine**, for now. (Dave, 2026-10-20)
@@ -86,9 +86,9 @@ agent_wiki serves an MCP server so agents can work with the wiki. (Dave, 2026-10
 - **The frontmatter.**
 - **The outline: a nested tree of headings, each with its line number and anchor.** (Dave, 2026-10-20)
 - **References to other docs.** (Dave, 2026-10-20)
-  [PROVISIONAL: references are the page's wikilinks, each as written, resolved to a path, or marked ambiguous (with the match count) or unmatched. Ordinary markdown links to other `.md` files aren't extracted today.]
+  [PROVISIONAL: references are the page's wikilinks, each as written, resolved to a path, or marked ambiguous (with the match count) or unmatched.] Ordinary markdown links to other `.md` files aren't extracted today.
 - **The summary, if available.** (Dave, 2026-10-20)
-- [PROVISIONAL: output, with sections that have nothing in them left out:
+- [PROVISIONAL: output, with sections that have nothing in them left out:]
   ```
   path: projects/foo.md
   title: Foo Project
@@ -103,7 +103,7 @@ agent_wiki serves an MCP server so agents can work with the wiki. (Dave, 2026-10
     [[Bar]] → notes/bar.md
     [[Baz]] → ambiguous (3 matches)
     [[Qux]] → no match
-  ```]
+  ```
 
 ### Page URL tool
 
@@ -126,7 +126,7 @@ Offered by Dave, not yet chosen (2026-10-20):
 - **The browser side is part of the feature set**: the state push, the open-files tool, and the copy button. It doesn't have to be in before testing starts. (Dave, 2026-10-20)
 - **Only for the local case**, for now. "The hosted version will need a different solution that we can figure out later." (Dave, 2026-10-20)
   [OPEN: deferred — the hosted version. It needs a different design, with some kind of auth, which lets us track per-user state. Dave (2026-10-20): "a problem for another day."]
-- [PROVISIONAL: a page counts as open while its live-update stream is connected. The server gives each document page load a tab id, in the stream's URL (`…/_wiki/events/{page}?tab={id}`) and on `<body data-tab>`. When the stream drops (the tab is closed, or navigates away), the page is no longer open. Ids are `{process start ms}-{counter}`, so a page reconnecting after a restart keeps a distinct id.]
+- [PROVISIONAL: a page counts as open while its live-update stream is connected. The server gives each document page load a tab id, in the stream's URL (`{base}/_wiki/events?url={page url path}&tab={id}`) and on `<body data-tab>`. Other pages' streams, such as a live custom page's, carry no tab. When the stream drops (the tab is closed, or navigates away), the page is no longer open. Ids are `{process start ms}-{counter}`, so a page reconnecting after a restart keeps a distinct id.]
 - **Nice to have: a one-click copy-to-pasteboard button** that captures the current page in a way the agent can follow. (Dave, 2026-10-20)
   It copies the page's path relative to the wiki root. (Dave, 2026-10-20)
   [PROVISIONAL: `BodyCtx::copy_path()`, a `button.copy-path`; the default template puts it at the right of the breadcrumbs. A shared click handler in the page skeleton shows "Copied" for a moment.]
