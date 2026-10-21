@@ -18,6 +18,7 @@ Early prototype. The API will change.
 - **Images** and ordinary links resolve relative to the page, or from the root with a leading `/`, and never leave the root folder.
 - **Styling:** a built-in stylesheet with dark mode. A host stylesheet can be layered on top or replace it.
 - **Startup is immediate.** The folder is indexed in the background while pages are served.
+- **MCP server** for agents: search, document overviews, links into the web view, and what the user has open and selected. See [MCP](#mcp).
 
 ## Quick start
 
@@ -31,6 +32,25 @@ Serves on `127.0.0.1`, port 3000 by default. Ctrl-C starts a graceful shutdown; 
 
 The index of links, tags and search text is kept in memory by default and rebuilt on every start. `--index <path>` keeps it on disk in the database file `<path>` instead, so it persists across runs.
 
+## MCP
+
+The wiki serves an MCP server (streamable HTTP, no sessions) at `{base}/_wiki/mcp`; the binary prints its URL at startup. To connect Claude Code:
+
+```sh
+claude mcp add --transport http agent_wiki http://127.0.0.1:3000/_wiki/mcp
+```
+
+Tools:
+
+- **`search`**: a query and an optional folder. Each result is the document's path, title and tags, then its summary.
+- **`overview`**: a document's title, summary, frontmatter, outline (each heading with its line number and anchor) and resolved wikilinks, so an agent can read just the section it needs.
+- **`page_url`**: a document, plus an optional line or heading, gives its URL in the web view, to hand the user a link.
+- **`open_files`**: the documents open in the web view, most recently active first, with which one has focus and the selection as a line range.
+
+Paths in results are relative to the wiki root; the server's instructions give the root's absolute path once, on connect. Each document page also has a **Copy path** button that copies its root-relative path, for pasting to an agent.
+
+Local use only, for now: `open_files` reports every browser's open pages, and requests are only accepted when addressed to `localhost`, `127.0.0.1` or `::1`.
+
 ## Embedding in an axum app
 
 ```rust
@@ -43,7 +63,19 @@ let wiki = agent_wiki::Wiki::builder(root)
 let app = app.merge(wiki.router());
 ```
 
-Every generated URL carries the base path. The wiki's own routes live under `{base}/_wiki/`.
+Every generated URL carries the base path. The wiki's own routes live under `{base}/_wiki/`, including the MCP endpoint.
+
+### MCP tools in your own server
+
+The built-in tools are exported, so a host can serve them from its own rmcp server (`agent_wiki::rmcp` is re-exported). `wiki.tools()` returns the default collection, generic over the server type, to edit or merge:
+
+```rust
+let mut tools: ToolRouter<MyServer> = wiki.tools();
+tools.remove_route("open_files");
+tools.add_route(agent_wiki::route(MyTool::new(wiki.clone())));
+```
+
+A tool is a plain struct implementing `agent_wiki::Tool` (name, description, argument type, and an async `call` returning text); `route` adapts it to rmcp. The built-in tools can also be called directly, without rmcp, e.g. `Search::new(wiki.clone()).call(args)`.
 
 ## Extending with a host
 
@@ -51,7 +83,7 @@ A host type, passed with `.host(host, template)`, customises parsing and present
 
 - **`Host`** claims syntax during parsing. For example, a host can turn `[[ABC-123]]` into a ticket element instead of a wikilink.
 - **`Element`** draws the host's elements to HTML.
-- **`Template`** provides `head` and `body` hooks that wrap every page, for the host's own navigation and chrome.
+- **`Template`** provides `head` and `body` hooks that wrap every page, for the host's own navigation and chrome. A custom `body` places the built-in chrome itself: `ctx.search_box()`, `ctx.breadcrumbs()`, `ctx.copy_path()`, `ctx.tags()`, `ctx.frontmatter_table()`.
 
 ```rust
 struct SampleHost;
@@ -69,7 +101,7 @@ impl Host for SampleHost {
 }
 ```
 
-The full sketch is in [`docs/design/example.rs`](docs/design/example.rs), and the design in [`docs/design/`](docs/design/), starting from [`agent_wiki.md`](docs/design/agent_wiki.md).
+The full sketch is in [`docs/design/example.rs`](docs/design/example.rs), and the design in [`docs/design/`](docs/design/), starting from [`agent_wiki.md`](docs/design/agent_wiki.md); the MCP server is in [`mcp.md`](docs/design/mcp.md).
 
 ## Planned features
 
