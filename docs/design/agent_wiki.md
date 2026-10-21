@@ -84,7 +84,8 @@ Two places where host behaviour has to be configurable:
 - **Documents under a folder**, which is "kind of a version of search", e.g. "search for all the files under projects with this keyword".
 - **Iterating the documents and the file tree.** The naive case is that the host walks the content and filters it itself; "we can build in optimizations where we need them."
 - **The most recently updated documents in a tree**, e.g. the first 20.
-- **No raw SQL access.**
+- **No raw SQL access, for now.** (Dave, 2026-10-19; reasoning 2026-10-21) The spirit: the db schema shouldn't become an API surface to maintain, and hosts shouldn't have to write raw SQL to accomplish most tasks. But "this is an engine to let devs build arbitrary applications that are roughly shaped like 'a pile of markdown files and an agent', so we don't need to be limiting", and "in the spirit of progressively more control for more complexity (api layering), allowing applications to directly use the index db for their own purposes seems reasonable". The index is purely disposable: "I don't want vibe coded application features to creep in and then have users get mad when a lib update blows away their data."
+  [OPEN: deferred — direct access to the index db, as a lower layer.]
 
 **Folders and documents.** (Dave, 2026-10-21)
 
@@ -177,8 +178,22 @@ Chosen over limiting custom inserts to a fixed set of markdown-like shapes. (Dav
   - **Semantic: deferred**, but clearly wanted when semantic search is built. "Would be super cool to be able to just annotate a column and have it work. Easy with a default embedder. Probably possible to specify in attribute."
   [OPEN: deferred — mixed search across documents and entity types.]
 - **Built-in indexed data (wikilinks, tags) uses the same mechanism where feasible.** (Dave, 2026-10-21)
-- **Querying entity types is deferred.** "Big topic." It starts with the document API (see The data layer). (Dave, 2026-10-21)
-  [OPEN: deferred — querying entity types, and whether hosts share the db handle. "Not needed now, but will need to revisit as part of the querying discussion."]
+
+#### Querying entity types
+
+**Record queries come first; the rest is deferred.** (Dave, 2026-10-21) A record query returns `Vec<Entity<E>>`: "the outer type holds all the stuff we'd get through joins, like the document reference, dates, etc. `E` would be the host's entity type." The fixed result shape keeps it simple, and covers the most common use case.
+
+- **`Entity<E>` carries** the record's id and ordinal, and its page's path, URL, title, folder and edit time.
+- **Scopes:** `under(folder)`, and one document.
+- **Filtering joins:** records whose page has a matching record of another type, e.g. "find me all the tickets on pages where I'm mentioned".
+- **Ordering:** by the page's edit time, its path, document order, or a field.
+- **Limit and offset**; no more pagination than that. "Index based just needs limit and offset. Cursor based is just limit and a query param."
+- **Filters are our own functions**, e.g. `eq("key", v)`, taking field names as strings. (Dave, 2026-10-21) Built on sea-query internally, which stays out of the public API. "Query building is almost always immediately more complex than you expect. If we can get a lot for free with a dep, we should use it."
+  [OPEN: which filter operators.]
+- **Typed field names are deferred.** The derive could generate typed constants per field, accepted where a string is; being optional, they can be added later without breaking anything. (Dave, 2026-10-21)
+- **The built-in wikilinks and tags become entity types**, and their reads that fit record queries use them: a tag's pages, a link's referring pages, a document's tags. The tag cloud and search's tag matches stay internal SQL. (Dave, 2026-10-21)
+- **Aggregates need a different API**, since they return differently structured data. Deferred, with full query access. "It's probably also worth offering full query access, especially for custom types. The challenge here is really that it makes the db structure part of the public API, which is limiting." (Dave, 2026-10-21)
+  [OPEN: deferred — aggregates, queries returning several types, full query access, and whether hosts share the db handle.]
 
 ### Reindexing
 
