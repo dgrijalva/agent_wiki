@@ -38,8 +38,8 @@ pub use crate::entity::{
     DecodeError, EntityField, EntityType, Field, FieldKind, FieldValue, Records, Tag, Wikilink,
 };
 pub use crate::mcp::{
-    OpenFiles, OpenFilesArgs, Overview, OverviewArgs, PageUrl, PageUrlArgs, Search, SearchArgs,
-    Tool, route,
+    McpServer, OpenFiles, OpenFilesArgs, Overview, OverviewArgs, PageUrl, PageUrlArgs, Search,
+    SearchArgs, Tool, route,
 };
 pub use crate::parse::{BlockStream, Host, InlineStream, Never, Plain};
 pub use crate::query::{Direction, Entity, Filter, Query, Sort, filter};
@@ -102,6 +102,8 @@ struct Inner<P: Host> {
     signals: Arc<signals::Signals>,
     /// The document pages open in browsers, for the `open_files` tool.
     tabs: tabs::Tabs,
+    /// Makes the MCP endpoint's tools; holds no wiki, so no cycle.
+    tools: mcp::ToolsFn<P>,
 }
 
 impl Wiki {
@@ -116,6 +118,8 @@ impl Wiki {
             host: Plain,
             template: DefaultTemplate,
             entities: Vec::new(),
+            tools: None,
+            tools_before_host: false,
         }
     }
 }
@@ -164,6 +168,9 @@ pub struct WikiBuilder<P: Host = Plain> {
     template: P::Template,
     /// Registered entity types; an invalid one fails `build`.
     entities: Vec<anyhow::Result<entity::EntitySpec>>,
+    tools: Option<mcp::ToolsFn<P>>,
+    /// `.tools` was set before `.host()`, which fails `build`.
+    tools_before_host: bool,
 }
 
 impl<P: Host> WikiBuilder<P> {
@@ -178,6 +185,8 @@ impl<P: Host> WikiBuilder<P> {
             host,
             template,
             entities: self.entities,
+            tools: None,
+            tools_before_host: self.tools_before_host || self.tools.is_some(),
         }
     }
 
@@ -186,6 +195,20 @@ impl<P: Host> WikiBuilder<P> {
     /// two with the same name, fails `build`.
     pub fn entity<T: EntityType>(mut self) -> Self {
         self.entities.push(entity::EntitySpec::of::<T>());
+        self
+    }
+
+    /// The tools the MCP endpoint serves, made from the wiki: start from
+    /// [`Wiki::tools`] and add, remove or replace routes. Set it after
+    /// [`host`](Self::host); one set before it fails `build`.
+    pub fn tools(
+        mut self,
+        tools: impl Fn(&Wiki<P>) -> rmcp::handler::server::router::tool::ToolRouter<McpServer<P>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.tools = Some(Arc::new(tools));
         self
     }
 
@@ -214,6 +237,9 @@ impl<P: Host> WikiBuilder<P> {
     /// when another `Wiki` or process has it open, or when the file is not
     /// a SQLite database or is one that agent_wiki didn't create.
     pub async fn build(self) -> anyhow::Result<Wiki<P>> {
+        if self.tools_before_host {
+            anyhow::bail!("`.tools` was set before `.host()`; set it after");
+        }
         let root = self.root.canonicalize()?;
         std::fs::read_dir(&root)?;
         let host = Arc::new(self.host);
@@ -258,6 +284,9 @@ impl<P: Host> WikiBuilder<P> {
                 indexed,
                 signals,
                 tabs: tabs::Tabs::new(),
+                tools: self
+                    .tools
+                    .unwrap_or_else(|| Arc::new(|wiki: &Wiki<P>| wiki.tools())),
             }),
         })
     }

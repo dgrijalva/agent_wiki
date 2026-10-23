@@ -106,13 +106,14 @@ impl<P: Host> Wiki<P> {
     }
 }
 
-/// The server the router mounts: the default tools.
-pub(crate) struct Server<P: Host> {
-    tools: ToolRouter<Server<P>>,
+/// The server the router mounts at `{base}/_wiki/mcp`: the tools set with
+/// [`WikiBuilder::tools`](crate::WikiBuilder::tools), else the default ones.
+pub struct McpServer<P: Host> {
+    tools: ToolRouter<McpServer<P>>,
     instructions: Arc<str>,
 }
 
-impl<P: Host> ServerHandler for Server<P> {
+impl<P: Host> ServerHandler for McpServer<P> {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("agent_wiki", env!("CARGO_PKG_VERSION")))
@@ -157,18 +158,22 @@ line numbers) before reading the part you need. Use `page_url` to link the user 
 line or a heading in the wiki's web view. Use `open_files` to see what the user has \
 open in the wiki's web view, and what they have selected.";
 
-/// The HTTP endpoint for the default tools, with no sessions.
+/// Makes the collection the endpoint serves; see
+/// [`WikiBuilder::tools`](crate::WikiBuilder::tools).
+pub(crate) type ToolsFn<P> = Arc<dyn Fn(&Wiki<P>) -> ToolRouter<McpServer<P>> + Send + Sync>;
+
+/// The HTTP endpoint for the wiki's tools, with no sessions.
 pub(crate) fn service<P: Host>(
     wiki: Wiki<P>,
-) -> StreamableHttpService<Server<P>, NeverSessionManager> {
+) -> StreamableHttpService<McpServer<P>, NeverSessionManager> {
     let config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
         .with_json_response(true);
     let instructions: Arc<str> = instructions(&wiki.inner.root).into();
     StreamableHttpService::new(
         move || {
-            Ok(Server {
-                tools: wiki.tools(),
+            Ok(McpServer {
+                tools: (wiki.inner.tools)(&wiki),
                 instructions: instructions.clone(),
             })
         },

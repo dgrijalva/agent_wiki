@@ -4,8 +4,8 @@ use std::fs;
 use std::path::Path;
 
 use agent_wiki::{
-    OpenFiles, OpenFilesArgs, Overview, OverviewArgs, PageUrl, PageUrlArgs, Search, SearchArgs,
-    Tool, Wiki,
+    DefaultTemplate, OpenFiles, OpenFilesArgs, Overview, OverviewArgs, PageUrl, PageUrlArgs, Plain,
+    Search, SearchArgs, Tool, Wiki, route,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -374,4 +374,76 @@ async fn page_urls() {
         "lines start at 1"
     );
     assert_eq!(err(url("gone", None, None).await), "no document at gone.md");
+}
+
+/// A host's own tool, holding the wiki like the built-ins.
+struct Count(Wiki);
+
+impl Tool for Count {
+    type Args = SearchArgs;
+    const NAME: &'static str = "count";
+    const DESCRIPTION: &'static str = "Counts the documents matching a search.";
+
+    async fn call(&self, args: SearchArgs) -> anyhow::Result<String> {
+        let out = Search::new(self.0.clone()).call(args).await?;
+        Ok(out
+            .lines()
+            .filter(|l| !l.starts_with(' '))
+            .count()
+            .to_string())
+    }
+}
+
+#[tokio::test]
+async fn the_builder_sets_the_endpoints_tools() {
+    let dir = folder();
+    let wiki = Wiki::builder(dir.path())
+        .tools(|wiki| {
+            let mut tools = wiki.tools().with_route(route(Count(wiki.clone())));
+            tools.remove_route("open_files");
+            tools
+        })
+        .build()
+        .await
+        .unwrap();
+    wiki.indexed().await;
+    let app = wiki.router::<()>();
+
+    let list = rpc(
+        &app,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    )
+    .await;
+    let names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{list}"))
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["count", "overview", "page_url", "search"]);
+
+    let call = rpc(
+        &app,
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+            "name": "count", "arguments": {"query": "rocket"}
+        }}),
+    )
+    .await;
+    assert_eq!(call["result"]["content"][0]["text"], "3", "{call}");
+}
+
+#[tokio::test]
+async fn tools_set_before_host_fail_the_build() {
+    let dir = folder();
+    let err = Wiki::builder(dir.path())
+        .tools(|wiki| wiki.tools())
+        .host(Plain, DefaultTemplate)
+        .build()
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(
+        err.to_string(),
+        "`.tools` was set before `.host()`; set it after"
+    );
 }

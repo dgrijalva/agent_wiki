@@ -11,6 +11,16 @@ agent_wiki serves an MCP server so agents can work with the wiki. (Dave, 2026-10
 - **Hosts enable or disable the built-in tools, and provide their own.**
 - **The library exports its tools**, so a host can build whatever collection it wants, using rmcp's tool collections. (Dave, 2026-10-20)
 - **The wiki has a `tools` method** that returns the default collection, which the host can edit. (Dave, 2026-10-20)
+- **The builder has a `.tools` method** that sets the collection the wiki's own endpoint serves. It takes a closure from the wiki to the collection, since the tools hold the wiki and it doesn't exist until `build`. The closure starts from `wiki.tools()`, so the host adds, removes or replaces tools in one place. (Dave, 2026-10-23)
+  - [PROVISIONAL: the mounted server type is made public as `McpServer<P>`, so the closure can name the collection's server type.]
+  - [PROVISIONAL: the closure is kept and called each time the endpoint makes its server.] Today the endpoint calls `wiki.tools()` that way. Keeping the built collection in the wiki would be a reference cycle, since the tools hold the wiki.
+  - **`.tools` can only be set after `.host()`**, since `.host()` changes the builder's host type. (Dave, 2026-10-23)
+  - [PROVISIONAL: it is enforced at runtime: `.tools` set before `.host()` fails `build`, as an invalid entity type does.]
+
+  ```rust
+  Wiki::builder(root)
+      .tools(|wiki| wiki.tools().with_route(route(MyTool::new(wiki.clone()))))
+  ```
 - **Each tool holds its own copy of the wiki** (a cheap clone of the handle). Using a tool directly means instantiating its type with a wiki instance, which carries the host type. (Dave, 2026-10-20)
 - **A tool that needs something from the host gets it through the `Host` trait.** None do for now. (Dave, 2026-10-20)
 - **Tools are plain structs, adapted to rmcp by one generic `route` function.** (Dave, 2026-10-20: "that sketch looks fine.")
