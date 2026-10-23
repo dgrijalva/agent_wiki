@@ -2,9 +2,11 @@
 //! and the index. What the built-in pages are drawn from, and what a host
 //! builds its own pages and dashboards on.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
+use indextree::NodeId;
 use maud::Markup;
 use serde_json::Value;
 use tokio::sync::watch;
@@ -18,6 +20,7 @@ use crate::names::{LinkTarget, encode_component, folder_url, path_to_url};
 use crate::parse::{Host, parse};
 use crate::query::filter::eq;
 use crate::signals::DocumentChange;
+use crate::tree::{BlockKind, Children, InlineKind, KindRef, NodeRef};
 
 /// What is at a path: a folder or a document.
 pub enum Entry<P: Host> {
@@ -169,7 +172,8 @@ impl<P: Host> Walk<P> {
 pub struct Document<P: Host> {
     wiki: Wiki<P>,
     path: String,
-    tree: DocumentTree<P>,
+    /// Shared with the document's chunks.
+    tree: Arc<DocumentTree<P>>,
     ex: Extracted,
     /// Lowercase, sorted; empty until the document is indexed.
     tags: Vec<String>,
@@ -203,7 +207,7 @@ impl<P: Host> Document<P> {
         Ok(Some(Document {
             wiki: wiki.clone(),
             path: path.to_string(),
-            tree,
+            tree: Arc::new(tree),
             ex,
             tags,
             edited,
@@ -285,8 +289,132 @@ impl<P: Host> Document<P> {
                 ordinals: self.ex.ordinals.clone(),
                 headings: self.ex.headings.clone(),
                 lines: true,
+                page: None,
             },
         })
+    }
+
+    /// The top-level heading with id `anchor`, and every block after it up
+    /// to the next heading of the same or a higher level. `None` when there
+    /// is no such heading, or it is inside a block quote or list item.
+    pub fn section(&self, anchor: &str) -> Option<Section<'_, P>> {
+        let tree = &self.tree.tree;
+        let body = &self.tree.body.ids;
+        let start = body
+            .iter()
+            .position(|id| self.ex.headings.get(id).is_some_and(|a| a == anchor))?;
+        let level = heading_level(tree, body[start])?;
+        let end = body[start + 1..]
+            .iter()
+            .position(|&id| heading_level(tree, id).is_some_and(|l| l <= level))
+            .map_or(body.len(), |n| start + 1 + n);
+        Some(Section {
+            blocks: body[start..end]
+                .iter()
+                .map(|&id| NodeRef::new(tree, id))
+                .collect(),
+        })
+    }
+
+    /// `nodes`, all of this document, as an element to draw on another
+    /// page: their wikilinks resolved against the index (one lookup per
+    /// link in them), in-page links (`#…`) pointing to this document's
+    /// page, and no `data-line`. Fails when a node is of another document.
+    pub async fn chunk<'a>(
+        &'a self,
+        nodes: impl IntoIterator<Item = NodeRef<'a, P>>,
+    ) -> Result<Chunk<P>> {
+        let tree = &self.tree.tree;
+        let mut ids = Vec::new();
+        for node in nodes {
+            if !std::ptr::eq(node.tree, tree) {
+                bail!("a node of another document, in a chunk of {}", self.path);
+            }
+            ids.push(node.id);
+        }
+        let mut ordinals = HashMap::new();
+        let mut headings = HashMap::new();
+        // Only the chunk's wikilinks are resolved; the entries for the rest
+        // are never read.
+        let mut wikilinks = vec![None; self.ex.wikilinks.len()];
+        for node in ids.iter().flat_map(|id| id.descendants(&tree.arena)) {
+            if let Some(&n) = self.ex.ordinals.get(&node) {
+                ordinals.insert(node, n);
+                if matches!(
+                    NodeRef::new(tree, node).kind(),
+                    KindRef::Inline(InlineKind::WikiLink { .. })
+                ) {
+                    wikilinks[n] = resolve_href(&self.wiki, &self.ex.wikilinks[n]).await?;
+                }
+            }
+            if let Some(slug) = self.ex.headings.get(&node) {
+                headings.insert(node, slug.clone());
+            }
+        }
+        let base = &self.wiki.inner.base;
+        Ok(Chunk {
+            tree: self.tree.clone(),
+            blocks: Children::new(ids),
+            cx: DrawCx {
+                base: base.clone(),
+                folder: self.folder().to_string(),
+                wikilinks,
+                ordinals,
+                headings,
+                lines: false,
+                page: Some(format!("{base}{}", self.url())),
+            },
+        })
+    }
+}
+
+/// A heading's level; `None` for any other node.
+fn heading_level<P: Host>(tree: &crate::tree::Tree<P>, id: NodeId) -> Option<u8> {
+    match NodeRef::new(tree, id).kind() {
+        KindRef::Block(BlockKind::Heading { level }) => Some(*level),
+        _ => None,
+    }
+}
+
+/// A heading and the blocks in its section; from [`Document::section`].
+/// Iterates as its [`blocks`](Section::blocks), so it can be passed straight
+/// to [`Document::chunk`].
+pub struct Section<'a, P: Host> {
+    /// The heading first.
+    blocks: Vec<NodeRef<'a, P>>,
+}
+
+impl<'a, P: Host> Section<'a, P> {
+    pub fn heading(&self) -> NodeRef<'a, P> {
+        self.blocks[0]
+    }
+
+    /// The heading, then every block in its section, subsections included.
+    pub fn blocks(&self) -> impl Iterator<Item = NodeRef<'a, P>> + use<'_, 'a, P> {
+        self.blocks.iter().copied()
+    }
+}
+
+impl<'a, P: Host> IntoIterator for Section<'a, P> {
+    type Item = NodeRef<'a, P>;
+    type IntoIter = std::vec::IntoIter<NodeRef<'a, P>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.blocks.into_iter()
+    }
+}
+
+/// Part of a document, drawn off its own page; from [`Document::chunk`].
+/// Owns what it draws from.
+pub struct Chunk<P: Host> {
+    tree: Arc<DocumentTree<P>>,
+    blocks: Children<BlockKind<P>>,
+    cx: DrawCx,
+}
+
+impl<P: Host> Element<P> for Chunk<P> {
+    fn draw(&self, _: &DrawCtx<'_, P>) -> Markup {
+        draw_blocks(&self.tree.tree, &self.blocks, &self.cx)
     }
 }
 

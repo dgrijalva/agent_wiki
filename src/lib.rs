@@ -26,9 +26,12 @@ pub use rmcp;
 
 pub use crate::components::{
     Breadcrumbs, Contents, CopyPath, DisambiguationBody, FolderIndexBody, FrontmatterTable,
-    NotFoundBody, RecentlyEdited, SearchBody, SearchBox, TagBody, TagCloud, TagLinks,
+    NotFoundBody, RecentlyEdited, SearchBody, SearchBox, TableOfContents, TagBody, TagCloud,
+    TagLinks,
 };
-pub use crate::data::{Document, DocumentBody, Entry, Folder, LinkPage, SearchOpts, Walk};
+pub use crate::data::{
+    Chunk, Document, DocumentBody, Entry, Folder, LinkPage, SearchOpts, Section, Walk,
+};
 pub use crate::document::{DocumentTree, OutlineHeading};
 pub use crate::draw::{DrawChildren, DrawCtx, Element};
 pub use crate::entity::{

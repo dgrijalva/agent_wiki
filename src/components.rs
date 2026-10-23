@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::Wiki;
 use crate::data::{Document, Folder, SearchOpts};
+use crate::document::OutlineHeading;
 use crate::draw::{DrawCtx, Element, tag_href};
 use crate::index::search_terms;
 use crate::names::folder_url;
@@ -152,6 +153,90 @@ impl<P: Host> Element<P> for FrontmatterTable {
                         tr { th { (key) } td { (value_html(value)) } }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// The deepest heading level a table of contents lists.
+const TOC_DEPTH: u8 = 4;
+
+/// A document's outline as nested lists of links to its headings, collapsed
+/// under a "Table of Contents" bar; nothing when it has no headings down to
+/// `####`. The links go to the document's page, wherever this is drawn.
+pub struct TableOfContents {
+    url: String,
+    headings: Vec<OutlineHeading>,
+}
+
+impl TableOfContents {
+    /// For the page at `url` (under the base, e.g. `/Notes/Daily`).
+    pub fn new(url: impl Into<String>, outline: &[OutlineHeading]) -> Self {
+        TableOfContents {
+            url: url.into(),
+            headings: outline
+                .iter()
+                .filter(|h| h.level <= TOC_DEPTH)
+                .cloned()
+                .collect(),
+        }
+    }
+
+    pub fn of<P: Host>(doc: &Document<P>) -> Self {
+        TableOfContents::new(doc.url(), doc.outline())
+    }
+}
+
+/// A heading and the headings nested under it.
+struct TocEntry<'a> {
+    heading: &'a OutlineHeading,
+    children: Vec<TocEntry<'a>>,
+}
+
+/// Nests each heading under the nearest shallower one before it, one level
+/// down whatever levels it skips.
+fn nest(headings: &[OutlineHeading]) -> Vec<TocEntry<'_>> {
+    let mut roots: Vec<TocEntry> = Vec::new();
+    for heading in headings {
+        let mut siblings = &mut roots;
+        while siblings
+            .last()
+            .is_some_and(|last| last.heading.level < heading.level)
+        {
+            siblings = &mut siblings.last_mut().unwrap().children;
+        }
+        siblings.push(TocEntry {
+            heading,
+            children: Vec::new(),
+        });
+    }
+    roots
+}
+
+fn toc_list(base: &str, url: &str, entries: &[TocEntry]) -> Markup {
+    html! {
+        ul {
+            @for entry in entries {
+                li {
+                    a href={ (base) (url) "#" (entry.heading.anchor) } { (entry.heading.text) }
+                    @if !entry.children.is_empty() {
+                        (toc_list(base, url, &entry.children))
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<P: Host> Element<P> for TableOfContents {
+    fn draw(&self, cx: &DrawCtx<'_, P>) -> Markup {
+        if self.headings.is_empty() {
+            return html! {};
+        }
+        html! {
+            details.toc {
+                summary { "Table of Contents" }
+                (toc_list(cx.base_path(), &self.url, &nest(&self.headings)))
             }
         }
     }
@@ -599,6 +684,59 @@ fn scalar_text(value: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::parse::Plain;
+
+    fn heading(level: u8, text: &str) -> OutlineHeading {
+        OutlineHeading {
+            level,
+            text: text.to_string(),
+            anchor: text.to_lowercase(),
+            line: None,
+        }
+    }
+
+    fn toc(outline: &[OutlineHeading]) -> String {
+        let cx = DrawCtx::<Plain>::detached("/b");
+        TableOfContents::new("/P", outline).draw(&cx).into_string()
+    }
+
+    #[test]
+    fn table_of_contents_nests_the_outline() {
+        let outline = [
+            heading(1, "A"),
+            heading(2, "B"),
+            // A skipped level nests one down.
+            heading(4, "C"),
+            heading(5, "Deep"),
+            heading(2, "D"),
+            heading(1, "E"),
+        ];
+        let link = |t: &str| format!("<a href=\"/b/P#{}\">{t}</a>", t.to_lowercase());
+        assert_eq!(
+            toc(&outline),
+            format!(
+                "<details class=\"toc\"><summary>Table of Contents</summary>\
+                 <ul><li>{}<ul><li>{}<ul><li>{}</li></ul></li><li>{}</li></ul></li>\
+                 <li>{}</li></ul></details>",
+                link("A"),
+                link("B"),
+                link("C"),
+                link("D"),
+                link("E")
+            )
+        );
+
+        // Starting deeper than a later heading; nothing down to `####`.
+        assert_eq!(
+            toc(&[heading(3, "X"), heading(2, "Y")]),
+            "<details class=\"toc\"><summary>Table of Contents</summary>\
+             <ul><li><a href=\"/b/P#x\">X</a></li><li><a href=\"/b/P#y\">Y</a></li></ul></details>"
+        );
+        assert_eq!(toc(&[heading(5, "Deep")]), "");
+        assert_eq!(toc(&[]), "");
+    }
+
     use super::utc_date;
 
     #[test]

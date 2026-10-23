@@ -9,7 +9,10 @@ use maud::{Markup, html};
 use serde_json::Value;
 
 use crate::Wiki;
-use crate::components::{Breadcrumbs, CopyPath, FrontmatterTable, SearchBox, TagLinks};
+use crate::components::{
+    Breadcrumbs, CopyPath, FrontmatterTable, SearchBox, TableOfContents, TagLinks,
+};
+use crate::document::OutlineHeading;
 use crate::draw::{DrawCtx, Element};
 use crate::parse::Host;
 
@@ -66,6 +69,7 @@ pub struct DocumentMeta {
     url: String,
     frontmatter: Option<Value>,
     tags: Vec<String>,
+    outline: Vec<OutlineHeading>,
 }
 
 impl DocumentMeta {
@@ -75,6 +79,7 @@ impl DocumentMeta {
         url: String,
         frontmatter: Option<Value>,
         tags: Vec<String>,
+        outline: Vec<OutlineHeading>,
     ) -> Self {
         DocumentMeta {
             title,
@@ -82,6 +87,7 @@ impl DocumentMeta {
             url,
             frontmatter,
             tags,
+            outline,
         }
     }
 
@@ -106,6 +112,11 @@ impl DocumentMeta {
 
     pub fn tags(&self) -> &[String] {
         &self.tags
+    }
+
+    /// Every top-level heading, in document order.
+    pub fn outline(&self) -> &[OutlineHeading] {
+        &self.outline
     }
 }
 
@@ -267,10 +278,21 @@ impl<'a, P: Host> BodyCtx<'a, P> {
             _ => html! {},
         }
     }
+
+    /// The document's outline as a collapsed table of contents; empty when
+    /// it has no headings.
+    pub fn table_of_contents(&self) -> Markup {
+        match self.kind {
+            PageKind::Document(meta) => {
+                self.draw(&TableOfContents::new(meta.url(), meta.outline()))
+            }
+            _ => html! {},
+        }
+    }
 }
 
 /// Today's page: the search box, then a header with the breadcrumbs and tag
-/// links, then the frontmatter table and the content.
+/// links, then the frontmatter table, the table of contents and the content.
 pub struct DefaultTemplate;
 
 impl<P: Host> Template<P> for DefaultTemplate {
@@ -300,6 +322,7 @@ impl<P: Host> Template<P> for DefaultTemplate {
             }
             main {
                 (ctx.frontmatter_table())
+                (ctx.table_of_contents())
                 (content(ctx))
             }
         }
@@ -321,6 +344,7 @@ mod tests {
             "/Projects/Alpha/T".to_string(),
             Some(frontmatter),
             vec!["a".to_string(), "b".to_string()],
+            Vec::new(),
         ));
         let dir = tempfile::tempdir().unwrap();
         let wiki = crate::Wiki::builder(dir.path())

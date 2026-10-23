@@ -90,6 +90,16 @@ pub(crate) struct DrawCx {
     pub(crate) headings: HashMap<NodeId, String>,
     /// Draw each block's source line as `data-line`, for `#:N` links.
     pub(crate) lines: bool,
+    /// The source page's URL, when drawn off its own page: in-page links
+    /// (`#…`) go to it.
+    pub(crate) page: Option<String>,
+}
+
+impl DrawCx {
+    /// The href of `fragment` (`#…`) on the source page.
+    fn in_page(&self, fragment: &str) -> String {
+        format!("{}{fragment}", self.page.as_deref().unwrap_or(""))
+    }
 }
 
 /// Draws a list of top-level blocks.
@@ -212,7 +222,11 @@ impl<'a, P: Host> Draw<'a, P> {
                 out.push('>');
                 self.children(id, out);
                 out.push_str("<a class=\"anchor\"");
-                attr(out, "href", href_attr(&format!("#{slug}")));
+                attr(
+                    out,
+                    "href",
+                    href_attr(&self.cx.in_page(&format!("#{slug}"))),
+                );
                 out.push_str(">#</a>");
                 out.push_str(&format!("</h{level}>\n"));
             }
@@ -389,7 +403,7 @@ impl<'a, P: Host> Draw<'a, P> {
                     // `[[#Heading]]`: the heading on this page.
                     None => match target.split_once('#') {
                         Some((name, heading)) if name.trim().is_empty() => {
-                            (format!("#{}", slug(heading)), "wikilink")
+                            (cx.in_page(&format!("#{}", slug(heading))), "wikilink")
                         }
                         _ => (target.clone(), "wikilink"),
                     },
@@ -498,6 +512,7 @@ fn img(src: Option<&str>, alt: &str, title: Option<&str>, out: &mut String) {
 /// under the base, or `None` when it points outside the root.
 fn target_href(cx: &DrawCx, url: &str) -> Option<String> {
     match resolve(&cx.folder, url) {
+        Resolved::Unchanged if url.starts_with('#') => Some(cx.in_page(url)),
         Resolved::Unchanged => Some(url.to_string()),
         Resolved::OutsideRoot => None,
         Resolved::Local {

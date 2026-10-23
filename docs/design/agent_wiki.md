@@ -176,6 +176,15 @@ Not yet addressed. Deferred until after the first prototype (Dave, 2026-10-19: "
 - **An element gets what it needs from `cx`, or carries it in its own state**, e.g. `Breadcrumbs(path)`. (Dave, 2026-10-21)
 - **Drawing is synchronous.** Async work, such as index queries, happens when an element is built, e.g. `get_recently_edited(…).await`. (Dave, 2026-10-21)
 - [PROVISIONAL: an element outside a tree is drawn with `BodyCtx::draw(&element)` on a page, or `Wiki::draw(&element)` anywhere else.]
+- **A host can draw an arbitrary chunk of content extracted from a document**, through a new method for drawing arbitrary blocks. (Dave, 2026-10-23)
+  - **A chunk comes from one document.**
+  - **It never draws `data-line`.**
+  - **Relative links and images keep working**, resolved against the source document's folder.
+  - **Heading ids may collide** when a page draws several chunks: "a risk worth taking. low stakes."
+  - **Links keep referring to the same thing**, so a chunk's anchor links point to the source document. (Dave, 2026-10-23) That covers each heading's `#` link, `[x](#foo)` fragment links, `#:N` line links and same-page wikilinks (`[[#Heading]]`). Heading `id`s are still drawn.
+  - **`Document::chunk(nodes)` returns an element that draws the nodes**, taken from a `Section` or from a walk of the tree. It resolves only the chunk's own wikilinks. (Proposed by Claude, approved by Dave, 2026-10-23)
+  - **It is async** because resolving wikilinks takes index lookups, and drawing is synchronous.
+  - **A chunk owns its data**: the parsed tree is behind an `Arc`, so a chunk doesn't borrow its `Document`. Editing a document gets more annoying, "but we aren't doing that at all right now and there's always `Arc::make_mut`." (Dave, 2026-10-23)
 
 - **Server-side HTML: maud**, "as long as it doesn't make the API super complicated." (Dave, 2026-10-19)
 - **In the browser: htmx, and the host is free to add its own.** For example, a host could use Alpine to build its Linear widget. (Dave, 2026-10-19)
@@ -264,7 +273,7 @@ Support both GFM and Obsidian syntax. Features Dave named:
 - [PROVISIONAL: the highlight is the `line-target` class, with a default background in the built-in stylesheet (`--line-target`). A host restyles `.line-target`, or drops it with the default styles.]
 - [PROVISIONAL: the script skips elements that aren't laid out (e.g. a `<style>` HTML block). After a live-update swap it marks the line again without scrolling, so a page being edited doesn't jump.]
 
-[OPEN: the rest of the feature list — callouts, math, embeds (`![[…]]`), block links, highlights, `%%comments%%`, footnotes, backlinks, graph, table of contents. Offered, not yet chosen.]
+[OPEN: the rest of the feature list — callouts, math, embeds (`![[…]]`), block links, highlights, `%%comments%%`, footnotes, backlinks, graph. Offered, not yet chosen.]
 [OPEN: whether parsing builds on `parse-obsidian`.]
 
 ### Line breaks — Obsidian style
@@ -376,6 +385,25 @@ Folder index pages, for now. "This will probably evolve." (Dave, 2026-10-19)
 - **Tags at the bottom: the top 25, each with its count when it is greater than one,** e.g. `#foo (3)`. No sizing by weight: "it looks messy." (Dave, 2026-10-20)
 
 [OPEN: what else goes on the index page.]
+
+### Table of contents
+
+> **Dave (2026-10-23):** "It is really nice to have, though. Agent written markdown files can get long fast."
+
+- **A `TableOfContents` component draws a document's outline as nested lists.** The outline data is sufficient to draw it. (Dave, 2026-10-23)
+- **Headings down to `####`.** (Dave, 2026-10-23)
+- **The page's own `#` heading is included**, "since it would be weird if there were multiple # headings in a doc and only the first one was omitted." (Dave, 2026-10-23)
+- [PROVISIONAL: a skipped level (`##` then `####`) nests one level deeper, under the nearest shallower heading, with no empty items. Dave left it to Claude, 2026-10-23: "we'll adjust if i don't like it."]
+- **Headings inside block quotes and list items aren't listed**, since they aren't in the outline (see `data.md`).
+- **`DefaultTemplate` draws it, for now.** Hosts with their own template place it themselves. (Dave, 2026-10-23)
+- **Between the breadcrumbs and the start of the document's contents.** (Dave, 2026-10-23)
+- **Collapsed by default; click to open.** Collapsed, it is one bar, the label at the left and a `>` at the right: (Dave, 2026-10-23)
+
+  ```
+  [ Table of Contents                        > ]
+  ```
+- **After the frontmatter table.** (Dave, 2026-10-23)
+- **The `>` rotates when it opens.** (Dave, 2026-10-23)
 
 ### Search
 

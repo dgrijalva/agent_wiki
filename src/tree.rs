@@ -139,8 +139,8 @@ impl<K> Parsed<K> {
 /// A node of a parsed document, for reading: its kind and its place in the
 /// tree.
 pub struct NodeRef<'a, P: Host> {
-    tree: &'a Tree<P>,
-    id: NodeId,
+    pub(crate) tree: &'a Tree<P>,
+    pub(crate) id: NodeId,
 }
 
 // Derived `Clone` and `Copy` would require `P: Clone`.

@@ -39,6 +39,14 @@ The data model layer: the document set as data, the index, and host entity types
 - [PROVISIONAL: `Wiki::root()`; `Wiki::lookup(path)`, where a document's `.md` is optional, and which is `None` when there is nothing at the path, when a segment is empty, hidden or `..`, or when the path reaches through a symlink; `Wiki::search(query, SearchOpts { limit })`, the root folder's search. A `Folder` has `path()`, `name()`, `url()`, `folders()`, `documents()`, `recent(n)`, `tags(n)` (the tag cloud), `search(query, opts)` and `walk()`, which loads every document below it, one at a time, by path.]
 - [PROVISIONAL: a `Document` has `path()`, `url()`, `folder()`, `title()`, `frontmatter()`, `tags()`, `summary()`, `edited()`, `outline()` and `tree()`, the read-only parsed tree (`DocumentTree`, walked with `NodeRef` and `KindRef`). Its edit time and tags come from the index. Resolving its wikilinks for drawing (one index lookup per link) is behind `body().await`, which returns the element that draws its content.]
 - [PROVISIONAL: `Wiki::tagged(tag)` and `Wiki::link_target(raw)` (the documents a wikilink matches, and those linking to it), so the tag and disambiguation page bodies are built from public data too.]
+- **Extracting a section.** (Dave, 2026-10-23) "Since markdown isn't tree structured innately, we have the outline, which is. It would be nice to be able to scan for a header and then grab that header plus all the stuff in that section." The section is drawn as a chunk (see Drawing in `agent_wiki.md`).
+  - **Two paths:** walk the parsed tree and grab nodes, or take a heading from the outline and call a method that returns all the blocks within that section and its children. (Dave, 2026-10-23)
+  - **A section ends at the next heading of the same or a higher level**, as the outline already implies. (Dave, 2026-10-23)
+  - **A heading inside a block quote or list item does not start a section.** (Dave, 2026-10-23)
+  - **`Document::section(anchor)`** returns a `Section`: `heading()`, and `blocks()`, the heading then the blocks in its section. A host finds the anchor by scanning `outline()`. A `Section` iterates as its `blocks()`, so it can be passed straight to `Document::chunk`. (Proposed by Claude, approved by Dave, 2026-10-23)
+- **The outline leaves out headings inside block quotes and list items.** They still render as headings. (Dave, 2026-10-23)
+  - **So the MCP `overview` leaves them out too.** (Dave, 2026-10-23)
+  - **A page title can still come from one**, as the first heading, when there is no frontmatter title. (Dave, 2026-10-23)
 
 **Watching for changes.** Since agent_wiki already watches the files and processes what changed, it can offer hosts a rich API for this. "We don't have to solve that now, but it's a good call out for something that we should build support for." (Dave, 2026-10-19)
 

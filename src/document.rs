@@ -50,7 +50,8 @@ pub(crate) struct Extracted {
     pub(crate) outline: Vec<OutlineHeading>,
 }
 
-/// A heading as the outline lists it.
+/// A heading as the outline lists it: a top-level one, not inside a
+/// block quote or list item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutlineHeading {
     pub level: u8,
@@ -182,12 +183,16 @@ impl<P: Host> Walk<'_, P> {
                     plain_text(self.tree, id, &mut text);
                     let slug = self.unique(slug(&text));
                     self.ex.headings.insert(id, slug.clone());
-                    self.ex.outline.push(OutlineHeading {
-                        level: *level,
-                        text: text.clone(),
-                        anchor: slug,
-                        line: self.tree.lines.get(&id).copied(),
-                    });
+                    // Headings inside a block quote or list item still
+                    // draw as headings, but aren't in the outline.
+                    if self.tree.arena[id].parent().is_none() {
+                        self.ex.outline.push(OutlineHeading {
+                            level: *level,
+                            text: text.clone(),
+                            anchor: slug,
+                            line: self.tree.lines.get(&id).copied(),
+                        });
+                    }
                     self.ex.first_heading.get_or_insert(text);
                 }
                 BlockKind::Paragraph if self.ex.first_paragraph.is_none() => {

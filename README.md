@@ -118,7 +118,7 @@ impl Host for SampleHost {
 
 ### The documents as data
 
-- **Folders and documents:** `wiki.root()`, `wiki.lookup(path)`, `wiki.search(query, SearchOpts { limit })`; a `Folder`'s `documents()`, `recent(n)`, `tags(n)`, `walk()`; a `Document`'s `title()`, `tags()`, `summary()`, `outline()`, its parsed `tree()`, and `body().await` to draw it.
+- **Folders and documents:** `wiki.root()`, `wiki.lookup(path)`, `wiki.search(query, SearchOpts { limit })`; a `Folder`'s `documents()`, `recent(n)`, `tags(n)`, `walk()`; a `Document`'s `title()`, `tags()`, `summary()`, `outline()`, its parsed `tree()`, and `body().await` to draw it; `section(anchor)` for a heading and its section, and `chunk(nodes).await` to draw part of it on another page.
 - **Watches:** `document.watch()` (modified or removed) and `folder.watch()` (anything in its subtree), as `tokio::sync::watch` receivers.
 - **Signals:** `wiki.signal(path)` makes every open instance of the page at that URL path refetch itself, whether it's a wiki page or the host's own.
 

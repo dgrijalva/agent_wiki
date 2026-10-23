@@ -573,3 +573,32 @@ async fn invalid_event_paths_are_not_found() {
         );
     }
 }
+
+#[tokio::test]
+async fn document_pages_have_a_table_of_contents() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("long.md"),
+        "---\nstatus: draft\n---\n# Long\n\n## Part\n\n> ## Quoted\n\nText.\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("flat.md"), "No headings.\n").unwrap();
+    let wiki = Wiki::builder(dir.path()).build().await.unwrap();
+    wiki.indexed().await;
+    let app = wiki.router();
+
+    let body = ok_body(&app, "/long").await;
+    let properties = body.find("<summary>Properties</summary>").unwrap();
+    let toc = body.find("<details class=\"toc\">").unwrap();
+    let content = body.find("<h1").unwrap();
+    assert!(properties < toc && toc < content, "{body}");
+    let toc = &body[toc..content];
+    assert!(
+        toc.contains("<a href=\"/long#long\">Long</a><ul><li><a href=\"/long#part\">Part</a>"),
+        "{toc}"
+    );
+    assert!(!toc.contains("Quoted"), "{toc}");
+
+    let body = ok_body(&app, "/flat").await;
+    assert!(!body.contains("class=\"toc\""), "{body}");
+}

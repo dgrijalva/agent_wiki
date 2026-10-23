@@ -78,6 +78,17 @@ th, td { border: 1px solid var(--border); padding: 0.3rem 0.75rem; text-align: l
 th { background: var(--surface); }
 details summary { cursor: pointer; color: var(--muted); }
 details table { margin-top: 0.75rem; }
+details.toc { background: var(--surface); border: 1px solid var(--border);
+  border-radius: 0.5rem; }
+details.toc summary { display: flex; justify-content: space-between; align-items: center;
+  list-style: none; padding: 0.4rem 1rem; }
+details.toc summary::-webkit-details-marker { display: none; }
+details.toc summary::after { content: '\\203A'; font-size: 1.25rem; line-height: 1;
+  transition: transform 0.15s; }
+details.toc[open] summary::after { transform: rotate(90deg); }
+details.toc > ul { margin: 0; padding: 0 1rem 0.75rem 2rem; }
+details.toc ul ul { margin: 0; }
+details.toc li { margin: 0.2rem 0; }
 .line-target { background: var(--line-target); }
 .crumbs-row { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
 button.copy-path { flex: none; font: inherit; font-size: 0.8rem; color: var(--muted);
@@ -466,6 +477,7 @@ async fn page_view<P: Host>(wiki: &Wiki<P>, request: &Parts, rel: &str) -> Resul
         doc.url(),
         doc.frontmatter().cloned(),
         doc.tags().to_vec(),
+        doc.outline().to_vec(),
     );
     let page = Page {
         kind: PageKind::Document(meta),
