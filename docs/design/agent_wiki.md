@@ -6,6 +6,8 @@ The standing definition of agent_wiki. Unmarked prose is decided; anything not d
 
 > **Dave (2026-10-19):** "I have expressed an idea to want to be able to host a folder of markdown files as a website. I want to be able to use it in multiple contexts. Let's build it as an open source project. We can build it using rust/axum so it can be dropped in anywhere. This way, it can be hosted inside other applications and wrapped in things like auth/tooling/etc."
 
+> **Dave (2026-10-27):** "the point of this project is to share documents with an agent." "that's why it's called 'agent_wiki' ;)"
+
 ## Shape
 
 - **What it does:** hosts a folder of markdown files as a website.

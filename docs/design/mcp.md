@@ -98,6 +98,8 @@ agent_wiki serves an MCP server so agents can work with the wiki. (Dave, 2026-10
 - **References to other docs.** (Dave, 2026-10-20)
   [PROVISIONAL: references are the page's wikilinks, each as written, resolved to a path, or marked ambiguous (with the match count) or unmatched.] Ordinary markdown links to other `.md` files aren't extracted today.
 - **The summary, if available.** (Dave, 2026-10-20)
+- **Page stats**, so the agent can decide how to consume the document. (Dave, 2026-10-28) "page size is probably very useful for how the agent decides to consume a file"
+  - **Size is given in lines.** (Dave, 2026-10-28)
 - [PROVISIONAL: output, with sections that have nothing in them left out:]
   ```
   path: projects/foo.md
@@ -121,12 +123,28 @@ agent_wiki serves an MCP server so agents can work with the wiki. (Dave, 2026-10
 - [PROVISIONAL: named `page_url`. A line gives a line link (`#:N`); a heading, matched by its text or its anchor, ignoring case, gives the heading's anchor. Giving both is an error, and so is a heading the page doesn't have.]
 - [PROVISIONAL: the URL is absolute, built from the MCP request's `Host` header (and `X-Forwarded-Proto`, else `http`) plus the base path, since the agent reached the server there. Called directly, outside an MCP request, it is a path from the site root.]
 
+### Read document tool
+
+- **`read_document` reads any document**, including the reference documents built into the binary, which have no file on disk (see `agent_integration.md`). (Dave, 2026-10-27)
+- **It mirrors the web UI, serving both documents and index pages.** (Dave, 2026-10-28)
+  [OPEN: deferred — hosts participating, as they do in web rendering. Dave (2026-10-28): "it would be cool if hosts could participate in this".]
+- **Arguments: `path`, `lines` (optional), `sections` (optional).** (Dave, 2026-10-28)
+  - With neither, it returns the whole document.
+  - `lines` returns a line range.
+  - `sections` returns those sections, as extracted by section (see Extracting a section in `data.md`). **Sections are named by anchor.** (Dave, 2026-10-28)
+  - **`lines` and `sections` are mutually exclusive**; giving both is an error. (Dave, 2026-10-28)
+  - **`lines` is a string like `"12-40"`**, matching how `open_files` reports selections. (Dave, 2026-10-28)
+    It also accepts the `open_files` form as written (`L12-L18`, `L40-end`), and `"12-"` to the end. (Dave, 2026-10-28)
+  - [OPEN: deferred — searching within the document, returning the blocks or sections that contain the match plus where they are in the file. Dave (2026-10-28): "maybe later".]
+- **No overview mode.** The doc overview tool already gives the overview, and stays where it is. (Dave, 2026-10-28)
+- **Reading an index page returns something like the web view, to start: the file list with some brief preview content.** (Dave, 2026-10-28)
+
 ### Tool ideas
 
 Offered by Dave, not yet chosen (2026-10-20):
 
 - Follow or expand wikilinks.
-- Search within a document, returning the sections that contain the search term.
+- Search within a document, returning the sections that contain the search term. Now a possible later mode of `read_document`.
 
 ## Round-tripping between the web UI and the agent
 

@@ -6,7 +6,8 @@ Single-developer project.
 
 | Path | Holds |
 |---|---|
-| `docs/design/` | The design: the source of truth for what agent_wiki is supposed to be. `agent_wiki.md` is the core; `data.md` is the data model layer; `mcp.md` is the MCP server. |
+| `docs/design/` | The design: the source of truth for what agent_wiki is supposed to be. `agent_wiki.md` is the core; `data.md` is the data model layer; `mcp.md` is the MCP server; `agent_integration.md` is the reference documents and onboarding for agents. |
+| `reference/` | The reference documents, built into the binary and served at `{base}/_wiki/reference` (see `docs/design/agent_integration.md`). |
 | `docs/plans/` | Plans and journals. A plan is trash once the plan is done. |
 | `tools/pending/` | Lists every marker in the docs. |
 
