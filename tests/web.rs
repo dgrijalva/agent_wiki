@@ -1,4 +1,4 @@
-use agent_wiki::Wiki;
+use agent_wiki::{AllowedHosts, Wiki};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -628,4 +628,152 @@ async fn the_reference_is_served_under_wiki() {
     assert!(!root.contains("_wiki/reference"), "{root}");
     let search = ok_body(&app, "/_wiki/search?q=onboarding").await;
     assert!(!search.contains("/_wiki/reference/"), "{search}");
+}
+
+/// The status of a request to `uri` with this `Host`, or none; an MCP
+/// `initialize` when `uri` is the endpoint.
+async fn status_for_host(app: &Router, uri: &str, host: Option<&str>) -> StatusCode {
+    let mcp = uri.ends_with("/_wiki/mcp");
+    let mut request = if mcp {
+        Request::post(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .header("mcp-protocol-version", "2025-06-18")
+    } else {
+        Request::get(uri)
+    };
+    if let Some(host) = host {
+        request = request.header(header::HOST, host);
+    }
+    let body = if mcp {
+        Body::from(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
+        )
+    } else {
+        Body::empty()
+    };
+    let response = app
+        .clone()
+        .oneshot(request.body(body).unwrap())
+        .await
+        .unwrap();
+    response.status()
+}
+
+async fn app_with_hosts(hosts: AllowedHosts) -> Router {
+    let wiki = Wiki::builder(FIXTURE)
+        .allowed_hosts(hosts)
+        .build()
+        .await
+        .unwrap();
+    wiki.indexed().await;
+    wiki.router()
+}
+
+const CHECKED: &[&str] = &[
+    "/",
+    "/Home",
+    "/_wiki/search?q=home",
+    "/_wiki/reference/",
+    "/_wiki/mcp",
+];
+
+#[tokio::test]
+async fn allowed_hosts_refuse_a_foreign_host() {
+    let app = app_with_hosts(AllowedHosts::loopback()).await;
+    for uri in CHECKED {
+        for host in ["127.0.0.1:3000", "localhost:3000", "[::1]:3000"] {
+            assert_eq!(
+                status_for_host(&app, uri, Some(host)).await,
+                StatusCode::OK,
+                "{uri} {host}"
+            );
+        }
+        assert_eq!(
+            status_for_host(&app, uri, Some("evil.example:3000")).await,
+            StatusCode::FORBIDDEN,
+            "{uri}"
+        );
+        // A request naming no host is refused.
+        assert_eq!(
+            status_for_host(&app, uri, None).await,
+            StatusCode::FORBIDDEN,
+            "{uri}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn allowed_hosts_set_the_mcp_endpoints_list_too() {
+    let app = app_with_hosts(AllowedHosts::new(["wiki.example.com"])).await;
+    for uri in CHECKED {
+        assert_eq!(
+            status_for_host(&app, uri, Some("wiki.example.com")).await,
+            StatusCode::OK,
+            "{uri}"
+        );
+        assert_eq!(
+            status_for_host(&app, uri, Some("127.0.0.1")).await,
+            StatusCode::FORBIDDEN,
+            "{uri}"
+        );
+    }
+    let app = app_with_hosts(AllowedHosts::any()).await;
+    for uri in CHECKED {
+        assert_eq!(
+            status_for_host(&app, uri, Some("evil.example")).await,
+            StatusCode::OK,
+            "{uri}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn without_allowed_hosts_only_the_mcp_endpoint_checks() {
+    let app = root_app().await;
+    for uri in &CHECKED[..CHECKED.len() - 1] {
+        assert_eq!(
+            status_for_host(&app, uri, Some("evil.example")).await,
+            StatusCode::OK,
+            "{uri}"
+        );
+        assert_eq!(
+            status_for_host(&app, uri, None).await,
+            StatusCode::OK,
+            "{uri}"
+        );
+    }
+    assert_eq!(
+        status_for_host(&app, "/_wiki/mcp", Some("evil.example")).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status_for_host(&app, "/_wiki/mcp", Some("127.0.0.1")).await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn allowed_hosts_cover_only_the_wikis_routes() {
+    let wiki = Wiki::builder(FIXTURE)
+        .base_path("/docs")
+        .allowed_hosts(AllowedHosts::loopback())
+        .build()
+        .await
+        .unwrap();
+    let app = Router::new()
+        .route("/dashboard", get(|| async { "dashboard" }))
+        .merge(wiki.router());
+    assert_eq!(
+        status_for_host(&app, "/docs/", Some("evil.example")).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status_for_host(&app, "/docs/_wiki/mcp", Some("evil.example")).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status_for_host(&app, "/dashboard", Some("evil.example")).await,
+        StatusCode::OK
+    );
 }

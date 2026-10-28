@@ -3,6 +3,7 @@ mod data;
 mod document;
 mod draw;
 mod entity;
+mod hosts;
 mod index;
 mod links;
 mod mcp;
@@ -39,6 +40,7 @@ pub use crate::draw::{DrawChildren, DrawCtx, Element};
 pub use crate::entity::{
     DecodeError, EntityField, EntityType, Field, FieldKind, FieldValue, Records, Tag, Wikilink,
 };
+pub use crate::hosts::AllowedHosts;
 pub use crate::mcp::{
     McpServer, OpenFiles, OpenFilesArgs, Overview, OverviewArgs, PageUrl, PageUrlArgs,
     ReadDocument, ReadDocumentArgs, Search, SearchArgs, Tool, route,
@@ -113,6 +115,9 @@ struct Inner<P: Host> {
     reference: Option<Wiki>,
     /// Markdown drawn above the root's index page; the reference's own.
     prompt: Option<&'static str>,
+    /// Checks every request's `Host`, the MCP endpoint's included; `None`
+    /// checks only the MCP endpoint's, with rmcp's own list.
+    allowed_hosts: Option<AllowedHosts>,
 }
 
 impl Wiki {
@@ -129,6 +134,7 @@ impl Wiki {
             entities: Vec::new(),
             tools: None,
             tools_before_host: false,
+            allowed_hosts: None,
         }
     }
 }
@@ -188,6 +194,7 @@ pub struct WikiBuilder<P: Host = Plain> {
     tools: Option<mcp::ToolsFn<P>>,
     /// `.tools` was set before `.host()`, which fails `build`.
     tools_before_host: bool,
+    allowed_hosts: Option<AllowedHosts>,
 }
 
 impl<P: Host> WikiBuilder<P> {
@@ -204,6 +211,7 @@ impl<P: Host> WikiBuilder<P> {
             entities: self.entities,
             tools: None,
             tools_before_host: self.tools_before_host || self.tools.is_some(),
+            allowed_hosts: self.allowed_hosts,
         }
     }
 
@@ -238,6 +246,15 @@ impl<P: Host> WikiBuilder<P> {
     /// CSS text layered on top of the built-in stylesheet on every page.
     pub fn stylesheet(mut self, css: impl Into<String>) -> Self {
         self.stylesheet = Some(css.into());
+        self
+    }
+
+    /// Refuses, with `403`, every request to the router whose `Host` isn't
+    /// one of `hosts`, against DNS rebinding. The MCP endpoint is checked
+    /// against the same list. Without it, only the MCP endpoint checks, and
+    /// only for `localhost`, `127.0.0.1` and `::1`.
+    pub fn allowed_hosts(mut self, hosts: AllowedHosts) -> Self {
+        self.allowed_hosts = Some(hosts);
         self
     }
 
@@ -307,6 +324,7 @@ impl<P: Host> WikiBuilder<P> {
                     .unwrap_or_else(|| Arc::new(|wiki: &Wiki<P>| wiki.tools())),
                 reference: Some(reference),
                 prompt: None,
+                allowed_hosts: self.allowed_hosts,
             }),
         })
     }

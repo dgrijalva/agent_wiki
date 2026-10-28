@@ -6,6 +6,7 @@ use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
+use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -241,7 +242,12 @@ pub fn router<P: Host, S: Clone + Send + Sync + 'static>(wiki: Wiki<P>) -> Route
         let to = format!("{base}/");
         router = router.route(&base, get(move || async move { Redirect::permanent(&to) }));
     }
-    router.with_state(wiki)
+    let hosts = wiki.inner.allowed_hosts.clone();
+    let router = router.with_state(wiki);
+    match hosts {
+        Some(hosts) => router.layer(middleware::from_fn_with_state(hosts, crate::hosts::check)),
+        None => router,
+    }
 }
 
 struct Failure(anyhow::Error);

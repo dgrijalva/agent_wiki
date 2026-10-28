@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use agent_wiki::{IndexStorage, Wiki};
+use agent_wiki::{AllowedHosts, IndexStorage, Wiki};
 use clap::Parser;
 
 /// Serve a folder of markdown as a website.
@@ -28,6 +28,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let wiki = Wiki::builder(&args.folder)
         .index_storage(storage)
+        .allowed_hosts(AllowedHosts::loopback())
         .build()
         .await?;
     if args.reindex {

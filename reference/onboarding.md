@@ -32,7 +32,7 @@ It serves on `127.0.0.1`, port 3000 by default. The index is in memory and rebui
 
 ## 5. Connect the MCP
 
-The endpoint is `http://127.0.0.1:<port>/_wiki/mcp`, streamable HTTP, without sessions. It only accepts requests addressed to `localhost`, `127.0.0.1` or `::1`.
+The endpoint is `http://127.0.0.1:<port>/_wiki/mcp`, streamable HTTP, without sessions. It, and the site, only accept requests addressed to `localhost`, `127.0.0.1` or `[::1]`: open the site at one of those, not at the machine's network name, which gets `403`.
 
 ## 6. Check it works
 
