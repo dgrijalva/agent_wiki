@@ -416,6 +416,21 @@ mod tests {
     }
 
     #[test]
+    fn callouts_are_searchable_but_not_in_the_outline() {
+        let ex =
+            plain("# Top\n\n> [!warning] Defunct #old\n> See [[Elsewhere]].\n>\n> ## Inside\n");
+        for want in ["Defunct", "See", "Elsewhere", "Inside"] {
+            assert!(ex.body_text.contains(want), "{want}: {:?}", ex.body_text);
+        }
+        assert_eq!(ex.inline_tags, ["old"]);
+        assert_eq!(ex.wikilinks, ["Elsewhere"]);
+        let outline: Vec<_> = ex.outline.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(outline, ["Top"]);
+        // The title isn't a paragraph, so the summary is the body's.
+        assert_eq!(ex.summary(), "See Elsewhere.");
+    }
+
+    #[test]
     fn no_tags_in_code_links_or_wikilinks() {
         let ex = plain(
             "Real #one and `#code` and [#linktext](x) and [[Foo#b|#wl]].\n\n```\n#fenced\n```\n\nThen [[Bar]] #Two.\n",

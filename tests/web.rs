@@ -575,6 +575,11 @@ async fn builtin_stylesheet_has_dark_mode() {
     let body = ok_body(&root_app().await, "/Home").await;
     assert!(body.contains("prefers-color-scheme: dark"));
     assert!(body.contains("styles/rose-pine.min.css"));
+    // GitHub's alert colors, light then dark.
+    let dark = body.find("@media (prefers-color-scheme: dark)").unwrap();
+    assert!(body[..dark].contains("--alert-note: #0969da"));
+    assert!(body[dark..].contains("--alert-note: #4493f8"));
+    assert!(body.contains(".markdown-alert-caution > .markdown-alert-title"));
 }
 
 #[tokio::test]

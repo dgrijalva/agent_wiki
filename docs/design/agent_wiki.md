@@ -275,7 +275,7 @@ Support both GFM and Obsidian syntax. Features Dave named:
 - [PROVISIONAL: the highlight is the `line-target` class, with a default background in the built-in stylesheet (`--line-target`). A host restyles `.line-target`, or drops it with the default styles.]
 - [PROVISIONAL: the script skips elements that aren't laid out (e.g. a `<style>` HTML block). After a live-update swap it marks the line again without scrolling, so a page being edited doesn't jump.]
 
-[OPEN: the rest of the feature list — callouts, math, note and heading embeds (`![[Note]]`, `![[Note#Heading]]`), block links, highlights, `%%comments%%`, footnotes, backlinks, graph. Offered, not yet chosen.]
+[OPEN: the rest of the feature list — math, note and heading embeds (`![[Note]]`, `![[Note#Heading]]`), block links, highlights, `%%comments%%`, footnotes, backlinks, graph. Offered, not yet chosen.]
 [OPEN: whether parsing builds on `parse-obsidian`.]
 
 ### Line breaks — Obsidian style
@@ -310,6 +310,32 @@ Client-side, loaded from a CDN rather than vendored into the project.
 - [PROVISIONAL: every CDN asset is pinned to an exact version and carries subresource integrity (`integrity="sha384-…"`, `crossorigin="anonymous"`), so the browser refuses a file whose bytes differ.]
 - [PROVISIONAL: mermaid loads as its self-contained build (`mermaid.min.js`), since the ES module build imports chunk files at runtime that the entry's `integrity` doesn't cover.]
 - [PROVISIONAL: verification is on for every asset by default; a host passes the builder a filter, `.integrity(|url| …)`, that receives each asset's URL and returns whether that asset carries `integrity`.]
+
+### Callouts
+
+[PROVISIONAL: Obsidian callouts are supported, and GitHub's alerts (`> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`) are the same syntax. A callout is a block quote whose first line is `[!type]`, then `+` or `-` to make it foldable, then an optional title. The type is case-insensitive. The body is the quote's other lines, parsed as blocks, so callouts nest. Modeled on Obsidian.]
+
+[PROVISIONAL: the header is `[!type]`, the type holding no whitespace or closing bracket, followed by the end of the line or by whitespace before the title. Anything else (`[!note]x`, `[!note]: /url`) leaves an ordinary block quote. The host is offered the header line first; a claim there leaves an ordinary block quote holding the host's block.]
+
+[PROVISIONAL: a callout is `BlockKind::Callout { kind, fold }`, the type lowercase and `fold` an `Option<Fold>` (`Open` for `+`, `Closed` for `-`). Its first child is a `BlockKind::CalloutTitle` holding the title's inlines, none when there is no title; the rest are the body's blocks.]
+
+[PROVISIONAL: callouts are drawn with GitHub's alert markup, so a GitHub alert draws as GitHub draws it, less `dir="auto"`: `<div class="markdown-alert markdown-alert-{type}">`, then `<p class="markdown-alert-title">` holding the type's Octicon (`info`, `light-bulb`, `report`, `alert`, `stop`) and the title, then the body. A callout with no title is titled with its type, capitalized, as GitHub and Obsidian both do. A written title, which GitHub has no syntax for, is wrapped in a `<span>`, so the title's flex layout keeps the spaces between its inline elements.]
+
+[PROVISIONAL: a foldable callout is a `<details>`, `open` for `+`, whose title is its `<summary>`. A `›` at the title's right turns when it opens, as on the table of contents. Obsidian's fold, GitHub's markup.]
+
+[PROVISIONAL: a type beyond GitHub's five is drawn as the GitHub type whose color Obsidian gives it, per the table below, and keeps its own type in `data-callout`. GitHub's meaning wins where Obsidian's aliases differ: Obsidian draws `important` as `tip` and `caution` as `warning`. A type Obsidian doesn't know is drawn as a note, as Obsidian does.]
+
+| Drawn as | Types |
+|---|---|
+| `note` (blue) | `note`, `info`, `todo`; `quote` and `cite`, gray in Obsidian, which GitHub has no type for; any other type |
+| `tip` (green) | `tip`, `hint`, `abstract`, `summary`, `tldr` (cyan in Obsidian), `success`, `check`, `done` |
+| `important` (purple) | `important`, `example` |
+| `warning` (orange) | `warning`, `attention`, `question`, `help`, `faq` |
+| `caution` (red) | `caution`, `danger`, `error`, `failure`, `fail`, `missing`, `bug` |
+
+[PROVISIONAL: the built-in stylesheet carries GitHub's alert rules: a colored left border and title, with GitHub's light colors in light mode and its dark colors in dark mode, as `--alert-{type}` and `--alert-{type}-border`. They are GitHub's colors, not Rosé Pine's.]
+
+[PROVISIONAL: a callout and its title get `data-line`, the header's line, and its body's blocks get their own. Its title and body are searchable text, and headings inside it are left out of the outline, as in any block quote.]
 
 ### Page titles
 

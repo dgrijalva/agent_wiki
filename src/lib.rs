@@ -50,7 +50,7 @@ pub use crate::query::{Direction, Entity, Filter, Query, Sort, filter};
 pub use crate::signals::DocumentChange;
 pub use crate::template::{BodyCtx, DefaultTemplate, DocumentMeta, HeadCtx, PageKind, Template};
 pub use crate::tree::{
-    Align, BlockKind, Children, Content, InlineKind, KindRef, NodeRef, Parsed, TaskStatus,
+    Align, BlockKind, Children, Content, Fold, InlineKind, KindRef, NodeRef, Parsed, TaskStatus,
 };
 pub use crate::web::CustomPage;
 

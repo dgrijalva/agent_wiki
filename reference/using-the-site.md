@@ -13,7 +13,7 @@ A document page has, above its content:
 - Its **tags**, and its **frontmatter** as a table, collapsed.
 - A **table of contents**, collapsed, listing headings down to `####`.
 
-Code blocks are highlighted, and `mermaid` blocks are drawn as diagrams.
+Code blocks are highlighted, and `mermaid` blocks are drawn as diagrams. Callouts (`> [!note] Title`, and GitHub's `> [!NOTE]` alerts) are drawn as GitHub draws alerts; `[!note]-` starts folded, `[!note]+` foldable and open.
 
 Task list items (`- [ ] …`) show a checkbox: `[x]` checked, `[/]` in progress as a partly filled box, `[-]` canceled as muted and struck through, checkbox included. Any other character in the brackets shows as open.
 
