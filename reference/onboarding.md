@@ -38,6 +38,10 @@ The endpoint is `http://127.0.0.1:<port>/_wiki/mcp`, streamable HTTP, without se
 
 The site lists the folder's pages; the MCP's tools answer; a page open in the browser shows up in `open_files`. Then read [Using the MCP](using-the-mcp.md).
 
-## 7. Offer to keep it running
+## 7. Help the user access it
+
+Help the user find the site, and answer their questions about how to use it: see [Using the site](using-the-site.md).
+
+## 8. Offer to keep it running
 
 The site and the MCP are only up while the process runs. Offer to keep it running. If the user opts in and has a custom application, make sure they have an easy way to restart it.

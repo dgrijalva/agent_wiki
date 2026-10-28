@@ -6,7 +6,7 @@ How agents learn to use agent_wiki: the reference documents, the MCP tool that s
 
 ## Shape
 
-- **Three pieces:** help for agents using the MCP, a guide to building your own agent_wiki application, and onboarding. (Dave, 2026-10-27)
+- **Pieces:** help for agents using the MCP, a guide to building your own agent_wiki application, and onboarding (Dave, 2026-10-27); and a guide to using the site (Dave, 2026-10-28).
 - **Self-contained in the project.** (Dave, 2026-10-27)
 - **The entry point is the README on GitHub.** An agent given the repo URL reads it, and sets things up or walks the user through it. (Dave, 2026-10-27)
 - **Everything is reference documents.** "maybe we just eat our own dogfood and provide the reference all just as documents, baked in at build time, in a special path" (Dave, 2026-10-27)
@@ -39,6 +39,10 @@ How agents learn to use agent_wiki: the reference documents, the MCP tool that s
 
 What an agent needs to work with the wiki through the MCP tools (see `mcp.md`).
 
+### Using the site
+
+What the user sees in the web view, so the agent can help the user find the site and answer questions about how to use it. (Dave, 2026-10-28)
+
 ### Building your own application
 
 A guide for a programmer, or their agent, building a host application on the library. It maps each need to the layer that serves it: styles, template, host syntax and elements, entity types, custom pages, tools. (Agreed, 2026-10-27)
@@ -59,7 +63,8 @@ The onboarding guide is a reference document. (Dave, 2026-10-27) Before anything
   4. Pick or create the folder.
   5. Connect the MCP to the user's agent.
   6. Check it works.
-  7. **Offer to keep it running.** If the user opts in and has a custom application, make sure they have an easy way to restart it. (Dave, 2026-10-27)
+  7. **Help the user access it.** Ideally the agent helps the user find the site and answers questions about how to use it. (Dave, 2026-10-28) [PROVISIONAL: placed after checking it works and before keeping it running.]
+  8. **Offer to keep it running.** If the user opts in and has a custom application, make sure they have an easy way to restart it. (Dave, 2026-10-27)
 - **For the binary, the startup choice for now is the index on disk or in memory.** (Dave, 2026-10-27)
 - **Recommend starting with the binary**, "since they don't have to make any decisions to start using it. the binary is enough for a lot of use cases and it's a great demo people considering building more." (Dave, 2026-10-27)
 - **A custom application is for when the user already has a specific application in mind, or is using the binary and wants to customize it.** (Dave, 2026-10-27)
