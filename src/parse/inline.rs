@@ -1494,7 +1494,7 @@ mod tests {
              <li><span class=\"todo\">sub</span></li>\n</ul>\n</li>\n\
              <li class=\"task-list-item\" data-task=\"x\">\
              <input type=\"checkbox\" class=\"task-list-item-checkbox\" checked=\"\" \
-             disabled=\"\" />done</li>\n\
+             disabled=\"\" /> done</li>\n\
              <li>plain</li>\n</ul>\n"
         );
         // Only at the start of an item's content, never of a paragraph.

@@ -290,8 +290,7 @@ fn unlink_autolinks(html: &str) -> String {
 }
 
 /// `html` (normalized) without the task-list classes and `data-task`
-/// attributes, and with a space after each checkbox. Classifies
-/// difference (g).
+/// attributes. Classifies difference (g).
 fn strip_task_markup(html: &str) -> String {
     let mut out = html.to_string();
     for class in [
@@ -305,16 +304,6 @@ fn strip_task_markup(html: &str) -> String {
         let value = start + " data-task=\"".len();
         let end = out[value..].find('"').map_or(out.len(), |i| value + i + 1);
         out.replace_range(start..end, "");
-    }
-    let mut from = 0;
-    while let Some(i) = out[from..].find("<input") {
-        let Some(end) = out[from + i..].find('>').map(|e| from + i + e + 1) else {
-            break;
-        };
-        if !out[end..].starts_with([' ', '\n']) {
-            out.insert(end, ' ');
-        }
-        from = end;
     }
     out
 }

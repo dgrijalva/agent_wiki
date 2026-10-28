@@ -1326,7 +1326,7 @@ mod tests {
              </ul>\n\
              <ol data-line=\"43\" class=\"contains-task-list\">\n\
              <li data-line=\"43\" class=\"task-list-item\" data-task=\" \">\
-             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" />task</li>\n\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" /> task</li>\n\
              </ol>\n\
              <blockquote data-line=\"44\">\n\
              <p data-line=\"44\">lazy<br />\n\
@@ -1389,10 +1389,10 @@ mod tests {
             "<ol start=\"3\">\n<li>a</li>\n<li>b</li>\n</ol>\n\
              <ul class=\"contains-task-list\">\n\
              <li class=\"task-list-item\" data-task=\" \">\
-             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" />t</li>\n\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" /> t</li>\n\
              <li class=\"task-list-item\" data-task=\"x\">\
              <input type=\"checkbox\" class=\"task-list-item-checkbox\" checked=\"\" \
-             disabled=\"\" />u</li>\n</ul>\n\
+             disabled=\"\" /> u</li>\n</ul>\n\
              <ul>\n<li><p>x</p>\n</li>\n<li><p>y</p>\n<ol>\n<li>n</li>\n</ol>\n</li>\n</ul>\n"
         );
         // Any one character but a bracket or whitespace other than a space is a

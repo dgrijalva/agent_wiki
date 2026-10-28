@@ -296,8 +296,7 @@ A `[ ]` at the start of a list item makes it a task (see First host integration 
 - [PROVISIONAL: any other single character, except whitespace and `[` or `]`, also makes a task, drawn as open; the Tasks plugin treats an unknown status as a to-do. The character is kept.]
 - [PROVISIONAL: a list item's task is a status enum, `ListItem { task: Option<TaskStatus> }`, with `Other(char)` for the rest, so an unknown status can't be drawn as done.]
 - [PROVISIONAL: the markup is GitHub's: `contains-task-list` on a list holding a task, `task-list-item` on the item, and a disabled `task-list-item-checkbox` inside the item's first paragraph, checked when done, with GitHub's styles for those classes. The item also carries Obsidian's `data-task` attribute, the bracketed character, for host styles.]
-- [PROVISIONAL: GitHub draws only checked and unchecked. In progress is an indeterminate checkbox, set by a small client script on load and after a live-update swap (unchecked without script); canceled is an unchecked checkbox, with the item muted and struck through, its nested items included. Both checkboxes have a `title` naming the status.]
-- [PROVISIONAL: the checkbox has no space after it, and a margin instead, so a canceled item's strikethrough starts at its text.]
+- [PROVISIONAL: GitHub draws only checked and unchecked. In progress is an indeterminate checkbox, set by a small client script on load and after a live-update swap (unchecked without script); canceled is an empty muted box with the strikethrough line across it, and the item muted and struck through, its nested items' text included. Both checkboxes have a `title` naming the status.]
 - [PROVISIONAL: the library's task item reads these statuses itself. The host task widget's Statuses decision under First host integration (parse-obsidian, missing custom statuses for now) is unchanged.]
 
 ### Code highlighting and mermaid — in the browser

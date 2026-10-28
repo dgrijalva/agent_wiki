@@ -504,8 +504,7 @@ fn attr(out: &mut String, name: &str, value: impl Render) {
     out.push('"');
 }
 
-/// A task's disabled checkbox. It has no space after it, so a canceled
-/// item's strikethrough starts at its text.
+/// A task's disabled checkbox, and a space.
 fn checkbox(status: TaskStatus, out: &mut String) {
     out.push_str("<input type=\"checkbox\" class=\"task-list-item-checkbox\"");
     if status == TaskStatus::Done {
@@ -517,7 +516,7 @@ fn checkbox(status: TaskStatus, out: &mut String) {
         TaskStatus::Canceled => attr(out, "title", "Canceled"),
         _ => {}
     }
-    out.push_str(" />");
+    out.push_str(" /> ");
 }
 
 /// `html` with ` data-line="{n}"` after the name of the open tag it starts
@@ -774,29 +773,29 @@ mod tests {
             draw(&t, vec![ul, loose, ol5], &cx()),
             "<ul class=\"contains-task-list\">\n\
              <li class=\"task-list-item\" data-task=\" \">\
-             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" />open\n\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" /> open\n\
              <ul>\n<li>nested</li>\n</ul>\n</li>\n\
              <li class=\"task-list-item\" data-task=\"x\">\
              <input type=\"checkbox\" class=\"task-list-item-checkbox\" checked=\"\" \
-             disabled=\"\" />done</li>\n\
+             disabled=\"\" /> done</li>\n\
              <li class=\"task-list-item\" data-task=\"/\">\
              <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" \
-             title=\"In progress\" />doing</li>\n\
+             title=\"In progress\" /> doing</li>\n\
              <li class=\"task-list-item\" data-task=\"-\">\
              <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" \
-             title=\"Canceled\" />dropped</li>\n\
+             title=\"Canceled\" /> dropped</li>\n\
              <li class=\"task-list-item\" data-task=\"&quot;\">\
-             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" />\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" /> \
              other</li>\n\
              <li>plain</li>\n\
              </ul>\n\
              <ol class=\"contains-task-list\">\n<li><p>one</p>\n</li>\n\
              <li class=\"task-list-item\" data-task=\"/\"><p>\
              <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" \
-             title=\"In progress\" />two</p>\n</li>\n\
+             title=\"In progress\" /> two</p>\n</li>\n\
              <li class=\"task-list-item\" data-task=\"x\">\
              <input type=\"checkbox\" class=\"task-list-item-checkbox\" checked=\"\" \
-             disabled=\"\" /><hr />\n</li>\n</ol>\n\
+             disabled=\"\" /> <hr />\n</li>\n</ol>\n\
              <ol start=\"5\">\n<li>five</li>\n</ol>\n"
         );
     }

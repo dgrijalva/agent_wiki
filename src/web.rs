@@ -91,8 +91,12 @@ details.toc > ul { margin: 0; padding: 0 1rem 0.75rem 2rem; }
 details.toc ul ul { margin: 0; }
 details.toc li { margin: 0.2rem 0; }
 .task-list-item { list-style-type: none; }
-.task-list-item-checkbox { margin: 0 0.45em 0.25em -1.4em; vertical-align: middle; }
+.task-list-item-checkbox { margin: 0 0.2em 0.25em -1.4em; vertical-align: middle; }
 .task-list-item[data-task=\"-\"] { color: var(--muted); text-decoration: line-through; }
+:is(.task-list-item[data-task=\"-\"], .task-list-item[data-task=\"-\"] > p)
+  > .task-list-item-checkbox { appearance: none; box-sizing: border-box; width: 13px;
+  height: 13px; margin-right: 0; color: inherit; border: 1px solid; border-radius: 2px;
+  background: linear-gradient(currentColor, currentColor) center / 100% 1px no-repeat; }
 .line-target { background: var(--line-target); }
 .crumbs-row { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
 button.copy-path { flex: none; font: inherit; font-size: 0.8rem; color: var(--muted);

@@ -15,7 +15,7 @@ A document page has, above its content:
 
 Code blocks are highlighted, and `mermaid` blocks are drawn as diagrams.
 
-Task list items (`- [ ] …`) show a checkbox: `[x]` checked, `[/]` in progress as a partly filled box, `[-]` canceled as muted and struck through. Any other character in the brackets shows as open.
+Task list items (`- [ ] …`) show a checkbox: `[x]` checked, `[/]` in progress as a partly filled box, `[-]` canceled as muted and struck through, checkbox included. Any other character in the brackets shows as open.
 
 ## Folder index pages
 
