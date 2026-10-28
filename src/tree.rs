@@ -17,6 +17,17 @@ pub enum BlockKind<P: Host> {
     },
     ThematicBreak,
     Quote,
+    /// A block quote whose first line is `[!type]`: an Obsidian callout or
+    /// a GitHub alert. Its first child is its [`BlockKind::CalloutTitle`];
+    /// the rest is its body.
+    Callout {
+        /// The type, lowercase.
+        kind: String,
+        /// `Some` for a foldable callout (`+` or `-` after the type).
+        fold: Option<Fold>,
+    },
+    /// A callout's title: the text after its type, if any.
+    CalloutTitle,
     List {
         ordered: bool,
         /// The first item's number; only meaningful when `ordered`.
@@ -43,6 +54,15 @@ pub enum BlockKind<P: Host> {
     },
     TableCell,
     Host(P::Block),
+}
+
+/// How a foldable callout starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fold {
+    /// `+`
+    Open,
+    /// `-`
+    Closed,
 }
 
 /// A table column's alignment.
