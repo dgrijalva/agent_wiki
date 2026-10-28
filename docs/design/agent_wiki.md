@@ -275,7 +275,7 @@ Support both GFM and Obsidian syntax. Features Dave named:
 - [PROVISIONAL: the highlight is the `line-target` class, with a default background in the built-in stylesheet (`--line-target`). A host restyles `.line-target`, or drops it with the default styles.]
 - [PROVISIONAL: the script skips elements that aren't laid out (e.g. a `<style>` HTML block). After a live-update swap it marks the line again without scrolling, so a page being edited doesn't jump.]
 
-[OPEN: the rest of the feature list — callouts, math, embeds (`![[…]]`), block links, highlights, `%%comments%%`, footnotes, backlinks, graph. Offered, not yet chosen.]
+[OPEN: the rest of the feature list — callouts, math, note and heading embeds (`![[Note]]`, `![[Note#Heading]]`), block links, highlights, `%%comments%%`, footnotes, backlinks, graph. Offered, not yet chosen.]
 [OPEN: whether parsing builds on `parse-obsidian`.]
 
 ### Line breaks — Obsidian style
@@ -506,6 +506,12 @@ Images and ordinary markdown links to other files should work. (Dave, 2026-10-19
 - Ordinary links follow normal link rules: `/other.md` is absolute (from the site root), `../other.md` is relative. (Dave, 2026-10-19: "probably? maybe follow normal link rules?")
 
 - **Image embeds use the same rules:** relative by default, absolute with a leading `/`. (Dave, 2026-10-19)
+  [PROVISIONAL: image embeds are Obsidian's `![[image.png]]`, `![[folder/image.png]]` and `![[image.png|alt]]`, for a target with an image extension the site serves (`png`, `jpg`, `jpeg`, `gif`, `webp`, `svg`, `avif`, `bmp`, `ico`).]
+  [PROVISIONAL: when the relative or absolute path names no file, an image embed resolves by name, as a wikilink does (see Wikilinks → Matching), against the image files: the extension is part of the name, and a folder in the target narrows several matches. One match draws that image; none or several draw as an unresolved wikilink to the disambiguation page, with the alt text, else the target, as its label. Modeled on Obsidian, which finds an attachment anywhere in the vault by name.]
+  [PROVISIONAL: a last part of `W` or `WxH` digits is the size, as in Obsidian: `![[image.png|300]]`, `![[image.png|300x200]]`, `![[image.png|alt|300]]`. It draws as the image's `width` and `height` attributes. Any other text after the first `|` is the alt text; without it, the alt text is the target.]
+  [PROVISIONAL: images are styled as GitHub's renderer styles them: `max-width: 100%` and `box-sizing: content-box`, so a wide image shrinks to the page.]
+  [PROVISIONAL: an image embed is not a link. It is no `Wikilink` record and takes no `wl-{n}` ordinal, so it is not among the MCP `overview`'s references or a disambiguation page's referencing pages. Its target and alt text are body text, for search.]
+  `![[Note]]` and heading or block embeds stay text as written (see the feature list under Markdown support).
 - Other resolution behaviour (e.g. a host's dedicated images folder) comes later through a host-replaceable resolver (see Extensibility), "when we go to do integrations."
 - **Resolution never leaves the root folder.** No `../` escape out of the hosted content. (Dave, 2026-10-19)
 

@@ -83,6 +83,10 @@ pub(crate) struct DrawCx {
     /// One entry per wikilink ordinal. `None` (empty target, e.g.
     /// `[[#Heading]]`) draws an ordinary link to the target as written.
     pub(crate) wikilinks: Vec<Option<WikiHref>>,
+    /// Each resolved image embed: resolved, drawn as an image of `href`;
+    /// unresolved, as an unresolved wikilink to `href`. An embed missing
+    /// here resolves from `folder`, as an ordinary image does.
+    pub(crate) embeds: HashMap<NodeId, WikiHref>,
     /// The ordinal of each wikilink and tag node, drawn as its `wl-{n}` or
     /// `tag-{n}` id.
     pub(crate) ordinals: HashMap<NodeId, usize>,
@@ -418,6 +422,7 @@ impl<'a, P: Host> Draw<'a, P> {
                     target_href(cx, dest).as_deref(),
                     &alt,
                     title.as_deref(),
+                    (None, None),
                     out,
                 );
             }
@@ -450,12 +455,30 @@ impl<'a, P: Host> Draw<'a, P> {
                 label.as_deref().unwrap_or(target).render_to(out);
                 out.push_str("</a>");
             }
-            InlineKind::Embed { target, alt } => img(
-                target_href(cx, target).as_deref(),
-                alt.as_deref().unwrap_or(target),
-                None,
-                out,
-            ),
+            InlineKind::Embed {
+                target,
+                alt,
+                width,
+                height,
+            } => {
+                let alt = alt.as_deref().unwrap_or(target);
+                let src = match cx.embeds.get(&id) {
+                    Some(WikiHref {
+                        href,
+                        resolved: false,
+                    }) => {
+                        out.push_str("<a");
+                        attr(out, "href", href_attr(href));
+                        out.push_str(" class=\"wikilink unresolved\">");
+                        alt.render_to(out);
+                        out.push_str("</a>");
+                        return;
+                    }
+                    Some(WikiHref { href, .. }) => Some(href.clone()),
+                    None => target_href(cx, target),
+                };
+                img(src.as_deref(), alt, None, (*width, *height), out);
+            }
             InlineKind::Tag(tag) => {
                 out.push_str("<a class=\"tag\"");
                 if let Some(n) = cx.ordinals.get(&id) {
@@ -480,7 +503,7 @@ impl<'a, P: Host> Draw<'a, P> {
                     InlineKind::WikiLink { target, label } => {
                         out.push_str(label.as_deref().unwrap_or(target))
                     }
-                    InlineKind::Embed { target, alt } => {
+                    InlineKind::Embed { target, alt, .. } => {
                         out.push_str(alt.as_deref().unwrap_or(target))
                     }
                     InlineKind::Tag(tag) => {
@@ -541,9 +564,16 @@ fn with_line(html: &str, n: usize) -> String {
     format!("{} data-line=\"{n}\"{}", &html[..at], &html[at..])
 }
 
-/// `<img src alt title />`, or without `src` when the target is outside the
-/// root. Written out for the ` />` that maud doesn't produce.
-fn img(src: Option<&str>, alt: &str, title: Option<&str>, out: &mut String) {
+/// `<img src alt title width height />`, or without `src` when the target
+/// is outside the root. Written out for the ` />` that maud doesn't
+/// produce.
+fn img(
+    src: Option<&str>,
+    alt: &str,
+    title: Option<&str>,
+    (width, height): (Option<u32>, Option<u32>),
+    out: &mut String,
+) {
     out.push_str("<img");
     if let Some(src) = src {
         attr(out, "src", href_attr(src));
@@ -551,6 +581,12 @@ fn img(src: Option<&str>, alt: &str, title: Option<&str>, out: &mut String) {
     attr(out, "alt", alt);
     if let Some(title) = title {
         attr(out, "title", title);
+    }
+    if let Some(width) = width {
+        attr(out, "width", width);
+    }
+    if let Some(height) = height {
+        attr(out, "height", height);
     }
     out.push_str(" />");
 }
@@ -869,6 +905,8 @@ mod tests {
         t.leaf(InlineKind::Embed {
             target: target.to_string(),
             alt: alt.map(str::to_string),
+            width: None,
+            height: None,
         })
     }
 
@@ -895,6 +933,36 @@ mod tests {
              <img alt=\"o\" />\
              <img src=\"/b/q.svg\" alt=\"/q.svg\" />\
              <img alt=\"R\" /></p>\n"
+        );
+    }
+
+    #[test]
+    fn embeds_resolved_in_the_context_draw_as_resolved() {
+        let mut t = Tree::<Plain>::new();
+        let found = embed(&mut t, "pic.png", None);
+        let missing = embed(&mut t, "gone.png", Some("Gone"));
+        let mut cx = cx();
+        cx.embeds = HashMap::from([
+            (
+                found.id,
+                WikiHref {
+                    href: "/b/assets/pic.png".to_string(),
+                    resolved: true,
+                },
+            ),
+            (
+                missing.id,
+                WikiHref {
+                    href: "/b/_wiki/link?to=gone.png".to_string(),
+                    resolved: false,
+                },
+            ),
+        ]);
+        let p = para(&mut t, vec![found, missing]);
+        assert_eq!(
+            draw(&t, vec![p], &cx),
+            "<p><img src=\"/b/assets/pic.png\" alt=\"pic.png\" />\
+             <a href=\"/b/_wiki/link?to=gone.png\" class=\"wikilink unresolved\">Gone</a></p>\n"
         );
     }
 

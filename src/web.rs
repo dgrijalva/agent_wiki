@@ -102,6 +102,7 @@ a.tag:hover { text-decoration: underline; }
 blockquote { margin-left: 0; padding-left: 1rem; border-left: 3px solid var(--border);
   color: var(--muted); }
 hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+img { max-width: 100%; box-sizing: content-box; }
 code { font-family: var(--mono); font-size: 0.875em; }
 :not(pre) > code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 0.3rem; }
 pre { overflow-x: auto; border-radius: 0.5rem; background: var(--code-bg); }

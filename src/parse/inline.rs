@@ -430,7 +430,8 @@ impl<'a, P: Host> InlineStream<'a, P> {
     }
 
     /// `![[target]]` or `![[target|alt]]`, where the target, without any
-    /// `#…`, names an image. Not in link text.
+    /// `#…`, names an image, and a last part of `W` or `WxH` digits is the
+    /// size. Not in link text.
     fn embed(&mut self, run: &mut Run) -> bool {
         let Some(rest) = self.rest().strip_prefix("![[") else {
             return false;
@@ -445,17 +446,34 @@ impl<'a, P: Host> InlineStream<'a, P> {
         if inner.contains("[[") {
             return false;
         }
-        let (target, alt) = match inner.split_once('|') {
-            Some((target, alt)) => (target.trim(), Some(alt.trim()).filter(|a| !a.is_empty())),
+        let (target, rest) = match inner.split_once('|') {
+            Some((target, rest)) => (target.trim(), Some(rest)),
             None => (inner.trim(), None),
         };
         if image_type_of(target.split('#').next().unwrap_or("")).is_none() {
             return false;
         }
+        let (alt, size) = match rest {
+            Some(rest) => {
+                let (head, last) = rest
+                    .rsplit_once('|')
+                    .map_or((None, rest), |(head, last)| (Some(head), last));
+                match embed_size(last) {
+                    Some(size) => (head, Some(size)),
+                    None => (Some(rest), None),
+                }
+            }
+            None => (None, None),
+        };
         self.pos += "![[".len() + end + "]]".len();
         let embed = InlineKind::Embed {
             target: target.to_string(),
-            alt: alt.map(str::to_string),
+            alt: alt
+                .map(str::trim)
+                .filter(|a| !a.is_empty())
+                .map(str::to_string),
+            width: size.map(|(w, _)| w),
+            height: size.and_then(|(_, h)| h),
         };
         self.push_leaf(run, embed);
         true
@@ -933,6 +951,21 @@ fn entity(s: &str) -> Option<(String, usize)> {
     Some((found.characters.to_string(), name.len()))
 }
 
+/// An embed's size, `W` or `WxH` in ASCII digits, surrounding whitespace
+/// ignored.
+fn embed_size(s: &str) -> Option<(u32, Option<u32>)> {
+    let number = |n: &str| {
+        (!n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| n.parse().ok())
+            .flatten()
+    };
+    let s = s.trim();
+    match s.split_once('x') {
+        Some((w, h)) => Some((number(w)?, Some(number(h)?))),
+        None => Some((number(s)?, None)),
+    }
+}
+
 /// `(dest "title")` after the `(`: the destination and title as written,
 /// and the length up to and including the `)`.
 fn inline_destination(s: &str) -> Option<(&str, Option<&str>, usize)> {
@@ -1201,6 +1234,23 @@ mod tests {
         assert_eq!(
             link,
             Some((&"Foo#b".to_string(), &Some("label".to_string())))
+        );
+    }
+
+    #[test]
+    fn embed_sizes() {
+        assert_eq!(
+            plain("![[a.png|300]] ![[b.png| 300x200 ]] ![[c.png|Alt|40]] ![[d.png|a|b]]"),
+            "<img src=\"/a.png\" alt=\"a.png\" width=\"300\" /> \
+             <img src=\"/b.png\" alt=\"b.png\" width=\"300\" height=\"200\" /> \
+             <img src=\"/c.png\" alt=\"Alt\" width=\"40\" /> \
+             <img src=\"/d.png\" alt=\"a|b\" />"
+        );
+        // Not a size: the whole part after the target is the alt text.
+        assert_eq!(
+            plain("![[e.png|300x]] ![[f.png|x200]] ![[g.png|-3]] ![[h.png|99999999999]]"),
+            "<img src=\"/e.png\" alt=\"300x\" /> <img src=\"/f.png\" alt=\"x200\" /> \
+             <img src=\"/g.png\" alt=\"-3\" /> <img src=\"/h.png\" alt=\"99999999999\" />"
         );
     }
 

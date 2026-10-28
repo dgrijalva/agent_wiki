@@ -121,10 +121,13 @@ pub enum InlineKind<P: Host> {
         target: String,
         label: Option<String>,
     },
-    /// `![[target|alt]]`, an image embed.
+    /// `![[target|alt]]`, an image embed, with an optional size last:
+    /// `![[target|300]]`, `![[target|alt|300x200]]`.
     Embed {
         target: String,
         alt: Option<String>,
+        width: Option<u32>,
+        height: Option<u32>,
     },
     /// `#tag`, without the `#`, as written.
     Tag(String),
