@@ -122,7 +122,27 @@ async fn home_page_renders() {
     assert!(tag_line.contains("href=\"/_wiki/tag/meta\""));
 
     assert!(body.contains("@highlightjs/cdn-assets@11.12.0/highlight.min.js"));
-    assert!(body.contains("mermaid@12/dist/mermaid.esm.min.mjs"));
+    assert!(body.contains("mermaid@12.2.0/dist/mermaid.min.js"));
+}
+
+#[tokio::test]
+async fn cdn_assets_carry_integrity() {
+    let app = root_app().await;
+    let body = ok_body(&app, "/Home").await;
+    let tags: Vec<&str> = body
+        .match_indices("\"https://cdn.jsdelivr.net/")
+        .map(|(at, _)| {
+            let start = body[..at].rfind('<').unwrap();
+            let end = at + body[at..].find('>').unwrap();
+            &body[start..=end]
+        })
+        .collect();
+    assert_eq!(tags.len(), 6, "{tags:#?}");
+    for tag in tags {
+        assert!(tag.contains(" integrity=\"sha384-"), "{tag}");
+        assert!(tag.contains(" crossorigin=\"anonymous\""), "{tag}");
+    }
+    assert!(!body.contains("type=\"module\""));
 }
 
 #[tokio::test]
