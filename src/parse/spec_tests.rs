@@ -124,6 +124,9 @@ struct Tally {
     /// (f) GFM autolinks: bare URLs and email addresses linked, as GFM's
     /// autolink extension (and today's renderer) does.
     gfm_autolinks: usize,
+    /// (g) task markup: GitHub's task-list classes and Obsidian's
+    /// `data-task` on task lists, items and checkboxes.
+    task_markup: usize,
 }
 
 /// Measures `sections` of `spec` through `render`, printing one row per
@@ -149,6 +152,8 @@ fn measure(name: &str, spec: &str, sections: &[&str], render: impl Fn(&str) -> S
             tally.frontmatter += 1;
         } else if unlink_autolinks(&got) == normalize(&ex.html) {
             tally.gfm_autolinks += 1;
+        } else if strip_task_markup(&got) == normalize(&ex.html) {
+            tally.task_markup += 1;
         } else if opens_html_block(&ex.markdown) {
             tally.html_blocks += 1;
         } else if has_tag(&ex.markdown) || has_wikilink(&ex.markdown) || has_wiki_url(&ex.html) {
@@ -160,13 +165,13 @@ fn measure(name: &str, spec: &str, sections: &[&str], render: impl Fn(&str) -> S
     }
     println!("\n{name}\n");
     println!(
-        "| Section | Pass | Fail | (a) soft breaks | (b) HTML blocks | (c) host blocks | (d) wiki | (e) frontmatter | (f) GFM autolinks |"
+        "| Section | Pass | Fail | (a) soft breaks | (b) HTML blocks | (c) host blocks | (d) wiki | (e) frontmatter | (f) GFM autolinks | (g) task markup |"
     );
-    println!("|---|---|---|---|---|---|---|---|---|");
+    println!("|---|---|---|---|---|---|---|---|---|---|");
     let mut total = Tally::default();
     for (section, t) in tallies.values() {
         println!(
-            "| {section} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {section} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             t.pass,
             t.fail,
             t.soft_breaks,
@@ -174,7 +179,8 @@ fn measure(name: &str, spec: &str, sections: &[&str], render: impl Fn(&str) -> S
             t.host_blocks,
             t.wiki,
             t.frontmatter,
-            t.gfm_autolinks
+            t.gfm_autolinks,
+            t.task_markup
         );
         total.pass += t.pass;
         total.fail += t.fail;
@@ -184,9 +190,10 @@ fn measure(name: &str, spec: &str, sections: &[&str], render: impl Fn(&str) -> S
         total.wiki += t.wiki;
         total.frontmatter += t.frontmatter;
         total.gfm_autolinks += t.gfm_autolinks;
+        total.task_markup += t.task_markup;
     }
     println!(
-        "| **Total** | {} | {} | {} | {} | {} | {} | {} | {} |",
+        "| **Total** | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
         total.pass,
         total.fail,
         total.soft_breaks,
@@ -194,7 +201,8 @@ fn measure(name: &str, spec: &str, sections: &[&str], render: impl Fn(&str) -> S
         total.host_blocks,
         total.wiki,
         total.frontmatter,
-        total.gfm_autolinks
+        total.gfm_autolinks,
+        total.task_markup
     );
     for (section, numbers) in failing {
         println!("failing in {section}: {numbers:?}");
@@ -278,6 +286,25 @@ fn unlink_autolinks(html: &str) -> String {
         }
     }
     out.push_str(rest);
+    out
+}
+
+/// `html` (normalized) without the task-list classes and `data-task`
+/// attributes. Classifies difference (g).
+fn strip_task_markup(html: &str) -> String {
+    let mut out = html.to_string();
+    for class in [
+        "contains-task-list",
+        "task-list-item",
+        "task-list-item-checkbox",
+    ] {
+        out = out.replace(&format!(" class=\"{class}\""), "");
+    }
+    while let Some(start) = out.find(" data-task=\"") {
+        let value = start + " data-task=\"".len();
+        let end = out[value..].find('"').map_or(out.len(), |i| value + i + 1);
+        out.replace_range(start..end, "");
+    }
     out
 }
 

@@ -123,6 +123,13 @@ details.toc[open] summary::after { transform: rotate(90deg); }
 details.toc > ul { margin: 0; padding: 0 1rem 0.75rem 2rem; }
 details.toc ul ul { margin: 0; }
 details.toc li { margin: 0.2rem 0; }
+.task-list-item { list-style-type: none; }
+.task-list-item-checkbox { margin: 0 0.2em 0.25em -1.4em; vertical-align: middle; }
+.task-list-item[data-task=\"-\"] { color: var(--muted); text-decoration: line-through; }
+:is(.task-list-item[data-task=\"-\"], .task-list-item[data-task=\"-\"] > p)
+  > .task-list-item-checkbox { appearance: none; box-sizing: border-box; width: 13px;
+  height: 13px; margin-right: 0; color: inherit; border: 1px solid; border-radius: 2px;
+  background: linear-gradient(currentColor, currentColor) center / 100% 1px no-repeat; }
 .line-target { background: var(--line-target); }
 .crumbs-row { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
 button.copy-path { flex: none; font: inherit; font-size: 0.8rem; color: var(--muted);
@@ -263,6 +270,22 @@ const LINE_JS: &str = "
 })();
 ";
 
+/// An in-progress task's checkbox (`data-task="/"`) is drawn indeterminate,
+/// which only script can set: on load and after a live-update swap.
+const TASK_JS: &str = "
+(() => {
+  const mark = () => {
+    const item = '.task-list-item[data-task=\"/\"]';
+    for (const box of document.querySelectorAll(
+      `${item} > .task-list-item-checkbox, ${item} > p > .task-list-item-checkbox`)) {
+      box.indeterminate = true;
+    }
+  };
+  mark();
+  document.addEventListener('htmx:afterSwap', mark);
+})();
+";
+
 pub fn router<P: Host, S: Clone + Send + Sync + 'static>(wiki: Wiki<P>) -> Router<S> {
     let base = wiki.inner.base.clone();
     let mut router = Router::new()
@@ -389,6 +412,7 @@ async fn draw_page<P: Host>(
                 script src=(MERMAID_JS.url) integrity=[MERMAID_JS.integrity_for(filter)] crossorigin="anonymous" {}
                 script { (PreEscaped(MERMAID_INIT_JS)) }
                 script { (PreEscaped(LINE_JS)) }
+                script { (PreEscaped(TASK_JS)) }
                 script { (PreEscaped(COPY_JS)) }
                 @if tab.is_some() {
                     script { (PreEscaped(STATE_JS)) }
