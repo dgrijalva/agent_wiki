@@ -15,12 +15,13 @@ tokio = { version = "1", features = ["full"] }
 ```
 
 ```rust
-use agent_wiki::Wiki;
+use agent_wiki::{AllowedHosts, Wiki};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let wiki = Wiki::builder("notes")
         .stylesheet("body { max-width: 60rem; }")
+        .allowed_hosts(AllowedHosts::loopback())
         .build()
         .await?;
     let app = axum::Router::new().merge(wiki.router());
@@ -32,6 +33,18 @@ async fn main() -> anyhow::Result<()> {
 ```
 
 The router serves the pages, the MCP endpoint at `{base}/_wiki/mcp`, and this reference at `{base}/_wiki/reference`. Mount it under a path with `.base_path("/docs")`; keep the index on disk with `.index_storage(IndexStorage::FilePath(path))`.
+
+## The `Host` check
+
+`.allowed_hosts(…)` makes the wiki's routes refuse, with `403`, any request whose `Host` header isn't on the list. It guards against DNS rebinding: a web page the user opens in their own browser, on a domain its owner controls, re-resolves that domain to `127.0.0.1`, so the browser sends the page's next requests to the wiki on the user's machine. The browser treats the wiki's responses as coming from the attacker's domain, so the page's script can read the rendered notes and send them anywhere. Those requests still carry `Host: <the attacker's domain>`, which the check refuses.
+
+| Serving the wiki | Use |
+|---|---|
+| On the user's machine (`127.0.0.1`) | `.allowed_hosts(AllowedHosts::loopback())`: `localhost`, `127.0.0.1` and `[::1]`, on any port. The stock binary uses it. |
+| On its own names | `.allowed_hosts(AllowedHosts::new(["wiki.example.com", "intranet:8080"]))`: a name allows any port, `name:port` only that port. |
+| Behind something else that checks the host | `.allowed_hosts(AllowedHosts::any())`, which also turns off the MCP endpoint's check. |
+
+The MCP endpoint is checked against the same list. Without `.allowed_hosts`, the web pages answer any `Host`, and only the MCP endpoint checks, accepting `localhost`, `127.0.0.1` and `::1`. A request with no `Host` (and, over HTTP/2, no `:authority`) is refused. The check covers only the wiki's own routes, not the application's routes merged beside them.
 
 ## What to use for what
 
@@ -46,3 +59,4 @@ The router serves the pages, the MCP endpoint at `{base}/_wiki/mcp`, and this re
 | Their own agent tools | A struct implementing `agent_wiki::Tool`, added with `.tools(\|wiki\| wiki.tools().with_route(route(MyTool::new(wiki.clone()))))`; or serve `wiki.tools()` from their own rmcp server. |
 | Their own auth | The application's own axum middleware, around `wiki.router()`. |
 | Some CDN assets loaded without integrity checks | `.integrity(\|url\| …)` returns whether the asset at `url` carries subresource integrity; every asset does unless it is set. |
+| The wiki on its own domain | `.allowed_hosts(AllowedHosts::new([…]))`, for the web pages and the MCP endpoint alike; see The `Host` check above. |

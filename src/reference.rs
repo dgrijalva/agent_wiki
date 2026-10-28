@@ -63,6 +63,7 @@ pub(crate) async fn build(
             tools: Arc::new(|wiki: &Wiki| wiki.tools()) as mcp::ToolsFn<Plain>,
             reference: None,
             prompt,
+            allowed_hosts: None,
         }),
     })
 }
