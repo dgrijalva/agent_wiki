@@ -45,3 +45,4 @@ The router serves the pages, the MCP endpoint at `{base}/_wiki/mcp`, and this re
 | Their own records indexed alongside the documents | `#[derive(EntityType)]`, registered with `.entity::<T>()` and pushed by `Host::extract`; queried with `wiki.query::<T>()`. |
 | Their own agent tools | A struct implementing `agent_wiki::Tool`, added with `.tools(\|wiki\| wiki.tools().with_route(route(MyTool::new(wiki.clone()))))`; or serve `wiki.tools()` from their own rmcp server. |
 | Their own auth | The application's own axum middleware, around `wiki.router()`. |
+| Some CDN assets loaded without integrity checks | `.integrity(\|url\| …)` returns whether the asset at `url` carries subresource integrity; every asset does unless it is set. |
