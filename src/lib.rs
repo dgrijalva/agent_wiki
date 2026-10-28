@@ -97,6 +97,8 @@ struct Inner<P: Host> {
     index: Index<P>,
     /// Host CSS emitted after the built-in stylesheet on every page.
     stylesheet: Option<String>,
+    /// Whether a CDN asset, by its URL, carries `integrity`.
+    integrity: IntegrityFn,
     /// Keeps the index current; dropping it stops the watch. `None` for
     /// embedded files, which never change.
     _watcher: Option<Debouncer<RecommendedWatcher>>,
@@ -123,6 +125,7 @@ impl Wiki {
             root: root.into(),
             base_path: String::from("/"),
             stylesheet: None,
+            integrity: None,
             index_storage: IndexStorage::default(),
             host: Plain,
             template: DefaultTemplate,
@@ -180,6 +183,7 @@ pub struct WikiBuilder<P: Host = Plain> {
     root: PathBuf,
     base_path: String,
     stylesheet: Option<String>,
+    integrity: Option<IntegrityFn>,
     index_storage: IndexStorage,
     host: P,
     template: P::Template,
@@ -198,6 +202,7 @@ impl<P: Host> WikiBuilder<P> {
             root: self.root,
             base_path: self.base_path,
             stylesheet: self.stylesheet,
+            integrity: self.integrity,
             index_storage: self.index_storage,
             host,
             template,
@@ -241,6 +246,14 @@ impl<P: Host> WikiBuilder<P> {
         self
     }
 
+    /// Whether the CDN asset at a URL carries subresource integrity, so the
+    /// browser refuses it unless its bytes match the pinned hash. Every asset
+    /// does unless this is set.
+    pub fn integrity(mut self, filter: impl Fn(&str) -> bool + Send + Sync + 'static) -> Self {
+        self.integrity = Some(Arc::new(filter));
+        self
+    }
+
     /// Where the index is kept: [`IndexStorage::InMemory`] (the default) or
     /// on disk with [`IndexStorage::FilePath`].
     pub fn index_storage(mut self, storage: IndexStorage) -> Self {
@@ -279,7 +292,8 @@ impl<P: Host> WikiBuilder<P> {
         let base = normalize_base(&self.base_path);
         let signals = Arc::new(signals::Signals::new(base.clone()));
         let watcher = watch::start(root.clone(), index.clone(), signals.clone())?;
-        let reference = reference::build(&base, self.stylesheet.clone()).await?;
+        let integrity: IntegrityFn = self.integrity.unwrap_or_else(|| Arc::new(|_: &str| true));
+        let reference = reference::build(&base, self.stylesheet.clone(), integrity.clone()).await?;
         let (done, indexed) = tokio::sync::watch::channel(false);
         tokio::spawn({
             let (root, index) = (root.clone(), index.clone());
@@ -298,6 +312,7 @@ impl<P: Host> WikiBuilder<P> {
                 template: self.template,
                 index,
                 stylesheet: self.stylesheet,
+                integrity,
                 _watcher: Some(watcher),
                 indexed,
                 signals,
@@ -311,6 +326,8 @@ impl<P: Host> WikiBuilder<P> {
         })
     }
 }
+
+pub(crate) type IntegrityFn = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 pub(crate) fn normalize_base(base: &str) -> String {
     let trimmed = base.trim_matches('/');

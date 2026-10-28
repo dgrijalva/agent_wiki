@@ -125,24 +125,50 @@ async fn home_page_renders() {
     assert!(body.contains("mermaid@12.2.0/dist/mermaid.min.js"));
 }
 
-#[tokio::test]
-async fn cdn_assets_carry_integrity() {
-    let app = root_app().await;
-    let body = ok_body(&app, "/Home").await;
-    let tags: Vec<&str> = body
-        .match_indices("\"https://cdn.jsdelivr.net/")
+/// The tags that load a CDN asset.
+fn cdn_tags(body: &str) -> Vec<&str> {
+    body.match_indices("\"https://cdn.jsdelivr.net/")
         .map(|(at, _)| {
             let start = body[..at].rfind('<').unwrap();
             let end = at + body[at..].find('>').unwrap();
             &body[start..=end]
         })
-        .collect();
-    assert_eq!(tags.len(), 6, "{tags:#?}");
-    for tag in tags {
-        assert!(tag.contains(" integrity=\"sha384-"), "{tag}");
-        assert!(tag.contains(" crossorigin=\"anonymous\""), "{tag}");
+        .collect()
+}
+
+#[tokio::test]
+async fn cdn_assets_carry_integrity() {
+    let app = root_app().await;
+    for uri in ["/Home", "/_wiki/reference/"] {
+        let body = ok_body(&app, uri).await;
+        let tags = cdn_tags(&body);
+        assert_eq!(tags.len(), 6, "{uri}: {tags:#?}");
+        for tag in tags {
+            assert!(tag.contains(" integrity=\"sha384-"), "{uri}: {tag}");
+            assert!(tag.contains(" crossorigin=\"anonymous\""), "{uri}: {tag}");
+        }
+        assert!(!body.contains("type=\"module\""), "{uri}");
     }
-    assert!(!body.contains("type=\"module\""));
+}
+
+#[tokio::test]
+async fn host_filter_turns_integrity_off_per_asset() {
+    let wiki = Wiki::builder(FIXTURE)
+        .integrity(|url| !url.contains("/mermaid@"))
+        .build()
+        .await
+        .unwrap();
+    wiki.indexed().await;
+    let app: Router = wiki.router();
+    for uri in ["/Home", "/_wiki/reference/"] {
+        let body = ok_body(&app, uri).await;
+        let tags = cdn_tags(&body);
+        assert_eq!(tags.len(), 6, "{uri}: {tags:#?}");
+        for tag in tags {
+            let mermaid = tag.contains("/mermaid@");
+            assert_eq!(tag.contains(" integrity="), !mermaid, "{uri}: {tag}");
+        }
+    }
 }
 
 #[tokio::test]

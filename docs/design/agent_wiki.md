@@ -298,7 +298,7 @@ Client-side, loaded from a CDN rather than vendored into the project.
 
 - [PROVISIONAL: every CDN asset is pinned to an exact version and carries subresource integrity (`integrity="sha384-…"`, `crossorigin="anonymous"`), so the browser refuses a file whose bytes differ.]
 - [PROVISIONAL: mermaid loads as its self-contained build (`mermaid.min.js`), since the ES module build imports chunk files at runtime that the entry's `integrity` doesn't cover.]
-- [PROVISIONAL: verification is always on; a host has no switch to turn it off.]
+- [PROVISIONAL: verification is on for every asset by default; a host passes the builder a filter, `.integrity(|url| …)`, that receives each asset's URL and returns whether that asset carries `integrity`.]
 
 ### Page titles
 

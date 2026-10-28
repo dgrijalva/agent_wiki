@@ -31,6 +31,13 @@ struct Asset {
     integrity: &'static str,
 }
 
+impl Asset {
+    /// The `integrity` value, unless the host's filter turns it off for this URL.
+    fn integrity_for(&self, filter: &dyn Fn(&str) -> bool) -> Option<&'static str> {
+        filter(self.url).then_some(self.integrity)
+    }
+}
+
 const HLJS_CSS: Asset = Asset {
     url: "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/rose-pine-dawn.min.css",
     integrity: "sha384-ExEZUBEPjNplQVR6iJX1rxlKapdO+EQ2QoO1+/yvd4be+LFX6ddT5QYqcxXrKqww",
@@ -344,6 +351,7 @@ async fn draw_page<P: Host>(
     // Keeps the root's hx attributes off its descendants, so a host element
     // making its own htmx request isn't given `hx-select="#htmx-root"`.
     let disinherit = live.map(|_| "*");
+    let filter = &*wiki.inner.integrity;
     html! {
         (DOCTYPE)
         html {
@@ -351,9 +359,9 @@ async fn draw_page<P: Host>(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (head.title()) }
-                link rel="stylesheet" href=(HLJS_CSS.url) integrity=(HLJS_CSS.integrity)
+                link rel="stylesheet" href=(HLJS_CSS.url) integrity=[HLJS_CSS.integrity_for(filter)]
                     crossorigin="anonymous" media="(prefers-color-scheme: light)";
-                link rel="stylesheet" href=(HLJS_DARK_CSS.url) integrity=(HLJS_DARK_CSS.integrity)
+                link rel="stylesheet" href=(HLJS_DARK_CSS.url) integrity=[HLJS_DARK_CSS.integrity_for(filter)]
                     crossorigin="anonymous" media="(prefers-color-scheme: dark)";
                 @if !head.default_styles_suppressed() {
                     style { (PreEscaped(STYLE)) }
@@ -361,8 +369,8 @@ async fn draw_page<P: Host>(
                 @if let Some(css) = &wiki.inner.stylesheet {
                     style { (PreEscaped(css)) }
                 }
-                script src=(HTMX_JS.url) integrity=(HTMX_JS.integrity) crossorigin="anonymous" {}
-                script src=(HTMX_SSE_JS.url) integrity=(HTMX_SSE_JS.integrity) crossorigin="anonymous" {}
+                script src=(HTMX_JS.url) integrity=[HTMX_JS.integrity_for(filter)] crossorigin="anonymous" {}
+                script src=(HTMX_SSE_JS.url) integrity=[HTMX_SSE_JS.integrity_for(filter)] crossorigin="anonymous" {}
                 (host_head)
             }
             body hx-ext=[sse] sse-connect=[events] data-tab=[tab.as_deref()] data-base=(base) {
@@ -370,9 +378,9 @@ async fn draw_page<P: Host>(
                     hx-swap=[swap] hx-disinherit=[disinherit] {
                     (root)
                 }
-                script src=(HLJS_JS.url) integrity=(HLJS_JS.integrity) crossorigin="anonymous" {}
+                script src=(HLJS_JS.url) integrity=[HLJS_JS.integrity_for(filter)] crossorigin="anonymous" {}
                 script { "hljs.highlightAll();" }
-                script src=(MERMAID_JS.url) integrity=(MERMAID_JS.integrity) crossorigin="anonymous" {}
+                script src=(MERMAID_JS.url) integrity=[MERMAID_JS.integrity_for(filter)] crossorigin="anonymous" {}
                 script { (PreEscaped(MERMAID_INIT_JS)) }
                 script { (PreEscaped(LINE_JS)) }
                 script { (PreEscaped(COPY_JS)) }
