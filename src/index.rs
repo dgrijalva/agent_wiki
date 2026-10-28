@@ -665,19 +665,10 @@ impl<P: Host> Index<P> {
     /// term is queried once: ANDing it again matches the same pages, and
     /// FTS5's cost grows faster than the number of phrases.
     pub async fn search(&self, query: &str) -> Result<Vec<PageRef>> {
-        let mut distinct = BTreeSet::new();
-        let terms: Vec<String> = search_terms(query)
-            .into_iter()
-            .filter(|t| distinct.insert(t.clone()))
-            .collect();
+        let (terms, phrase) = fts_terms(query);
         if terms.is_empty() {
             return Ok(Vec::new());
         }
-        let phrase = terms
-            .iter()
-            .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
-            .collect::<Vec<_>>()
-            .join(" ");
         let mut tags = terms.clone();
         tags.push(
             query
@@ -935,6 +926,22 @@ pub fn search_terms(query: &str) -> Vec<String> {
         .filter(|w| !w.is_empty())
         .map(str::to_lowercase)
         .collect()
+}
+
+/// [`search_terms`], each once, in first-seen order, and the FTS5 query
+/// ANDing them.
+fn fts_terms(query: &str) -> (Vec<String>, String) {
+    let mut distinct = BTreeSet::new();
+    let terms: Vec<String> = search_terms(query)
+        .into_iter()
+        .filter(|t| distinct.insert(t.clone()))
+        .collect();
+    let phrase = terms
+        .iter()
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    (terms, phrase)
 }
 
 fn rows_for<P: Host>(
@@ -1806,14 +1813,16 @@ mod tests {
     async fn repeated_terms_are_queried_once() {
         let index = fixture_index().await;
         for query in ["zephyr", "gusts zephyr"] {
-            let repeated = format!("{query} ").repeat(20_000);
-            let started = std::time::Instant::now();
+            let repeated = format!("{query} ").repeat(3);
+            assert_eq!(fts_terms(&repeated), fts_terms(query));
             let found = search(&index, &repeated).await;
-            let elapsed = started.elapsed();
             assert_eq!(found, search(&index, query).await, "{query}");
             assert!(!found.is_empty(), "{query}");
-            assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
         }
+        assert_eq!(
+            fts_terms("Zephyr zephyr ZEPHYR"),
+            (vec!["zephyr".to_string()], "\"zephyr\"".to_string())
+        );
         assert_eq!(
             search(&index, "Zephyr zephyr ZEPHYR").await,
             search(&index, "zephyr").await
