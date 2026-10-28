@@ -97,6 +97,7 @@ agent_wiki serves an MCP server so agents can work with the wiki. (Dave, 2026-10
 - **The outline: a nested tree of headings, each with its line number and anchor.** (Dave, 2026-10-20)
 - **References to other docs.** (Dave, 2026-10-20)
   [PROVISIONAL: references are the page's wikilinks, each as written, resolved to a path, or marked ambiguous (with the match count) or unmatched.] Ordinary markdown links to other `.md` files aren't extracted today.
+  [PROVISIONAL: image embeds (`![[image.png]]`) aren't references.]
 - **The summary, if available.** (Dave, 2026-10-20)
 - **Page stats**, so the agent can decide how to consume the document. (Dave, 2026-10-28) "page size is probably very useful for how the agent decides to consume a file"
   - **Size is given in lines.** (Dave, 2026-10-28)

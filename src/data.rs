@@ -16,6 +16,7 @@ use crate::document::{DocumentTree, Extracted, OutlineHeading, slug};
 use crate::draw::{DrawCtx, DrawCx, Element, WikiHref, draw_blocks};
 use crate::entity::{Tag, Wikilink};
 use crate::index::{FsKind, Resolution};
+use crate::links::{Resolved, local_href, resolve};
 use crate::names::{LinkTarget, encode_component, folder_url, path_to_url};
 use crate::parse::{Host, parse};
 use crate::query::filter::eq;
@@ -278,12 +279,18 @@ impl<P: Host> Document<P> {
         &self.tree
     }
 
-    /// The document's content as an element, with its wikilinks resolved
-    /// against the index (one lookup per link).
+    /// The document's content as an element, with its wikilinks and image
+    /// embeds resolved (one lookup per link or embed).
     pub async fn body(&self) -> Result<DocumentBody<'_, P>> {
         let mut wikilinks = Vec::with_capacity(self.ex.wikilinks.len());
         for raw in &self.ex.wikilinks {
             wikilinks.push(resolve_href(&self.wiki, raw).await?);
+        }
+        let mut embeds = HashMap::new();
+        for &id in &self.ex.embeds {
+            if let Some(href) = self.embed_href(id).await? {
+                embeds.insert(id, href);
+            }
         }
         Ok(DocumentBody {
             doc: self,
@@ -291,12 +298,24 @@ impl<P: Host> Document<P> {
                 base: self.wiki.inner.base.clone(),
                 folder: self.folder().to_string(),
                 wikilinks,
+                embeds,
                 ordinals: self.ex.ordinals.clone(),
                 headings: self.ex.headings.clone(),
                 lines: true,
                 page: None,
             },
         })
+    }
+
+    /// How the node `id` is drawn, when it is an image embed that
+    /// [`resolve_embed`] resolves.
+    async fn embed_href(&self, id: NodeId) -> Result<Option<WikiHref>> {
+        match NodeRef::new(&self.tree.tree, id).kind() {
+            KindRef::Inline(InlineKind::Embed { target, .. }) => {
+                resolve_embed(&self.wiki, self.folder(), target).await
+            }
+            _ => Ok(None),
+        }
     }
 
     /// The top-level heading with id `anchor`, and every block after it up
@@ -322,8 +341,8 @@ impl<P: Host> Document<P> {
     }
 
     /// `nodes`, all of this document, as an element to draw on another
-    /// page: their wikilinks resolved against the index (one lookup per
-    /// link in them), in-page links (`#…`) pointing to this document's
+    /// page: their wikilinks and image embeds resolved (one lookup per link
+    /// or embed in them), in-page links (`#…`) pointing to this document's
     /// page, and no `data-line`. Fails when a node is of another document.
     pub async fn chunk<'a>(
         &'a self,
@@ -342,7 +361,11 @@ impl<P: Host> Document<P> {
         // Only the chunk's wikilinks are resolved; the entries for the rest
         // are never read.
         let mut wikilinks = vec![None; self.ex.wikilinks.len()];
+        let mut embeds = HashMap::new();
         for node in ids.iter().flat_map(|id| id.descendants(&tree.arena)) {
+            if let Some(href) = self.embed_href(node).await? {
+                embeds.insert(node, href);
+            }
             if let Some(&n) = self.ex.ordinals.get(&node) {
                 ordinals.insert(node, n);
                 if matches!(
@@ -364,6 +387,7 @@ impl<P: Host> Document<P> {
                 base: base.clone(),
                 folder: self.folder().to_string(),
                 wikilinks,
+                embeds,
                 ordinals,
                 headings,
                 lines: false,
@@ -610,6 +634,43 @@ pub(crate) async fn resolve_href<P: Host>(wiki: &Wiki<P>, raw: &str) -> Result<O
         // The fragment rides along, for the disambiguation page's links.
         Resolution::Ambiguous(_) | Resolution::Missing => WikiHref {
             href: link_href(base, raw.trim()),
+            resolved: false,
+        },
+    }))
+}
+
+/// How the image embed `target` on a page in `folder` is drawn: the file
+/// it names relative to the page, or from the root with a leading `/`, if
+/// that is a file; else the one image it names as a wikilink names a page;
+/// else an unresolved link. `None` for a target left as written or
+/// outside the root, which draws as an ordinary image does.
+pub(crate) async fn resolve_embed<P: Host>(
+    wiki: &Wiki<P>,
+    folder: &str,
+    target: &str,
+) -> Result<Option<WikiHref>> {
+    let Resolved::Local { rel, suffix, .. } = resolve(folder, target) else {
+        return Ok(None);
+    };
+    let base = &wiki.inner.base;
+    if matches!(wiki.inner.root.kind(&rel).await, Ok(FsKind::File)) {
+        return Ok(Some(WikiHref {
+            href: local_href(base, &rel, &suffix, false),
+            resolved: true,
+        }));
+    }
+    let name = target.split(['?', '#']).next().unwrap_or("");
+    let named = match LinkTarget::parse(name.trim_start_matches('/')) {
+        Some(named) => wiki.inner.index.resolve_image(&named).await?,
+        None => Vec::new(),
+    };
+    Ok(Some(match named.as_slice() {
+        [rel] => WikiHref {
+            href: local_href(base, rel, &suffix, false),
+            resolved: true,
+        },
+        _ => WikiHref {
+            href: link_href(base, target.trim()),
             resolved: false,
         },
     }))

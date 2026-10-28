@@ -202,13 +202,15 @@ async fn tags_and_links() {
 async fn daily() -> (tempfile::TempDir, Wiki) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("Daily")).unwrap();
+    std::fs::create_dir_all(dir.path().join("media")).unwrap();
+    std::fs::write(dir.path().join("media/logo.png"), "").unwrap();
     std::fs::write(dir.path().join("Projects.md"), "# Projects\n").unwrap();
     std::fs::write(
         dir.path().join("Daily/today.md"),
         "# Today\n\n\
          ## Today's focus\n\n\
          - ship [[Projects]] and [[Elsewhere]]\n\
-         - see [below](#later), [line](#:3), [[#Later]], [notes](notes.md), ![](pic.png)\n\n\
+         - see [below](#later), [line](#:3), [[#Later]], [notes](notes.md), ![](pic.png), ![[logo.png|20]]\n\n\
          ### Detail\n\n\
          More.\n\n\
          > ## Quoted\n\n\
@@ -274,6 +276,7 @@ async fn chunk_draws_off_its_page() {
         &format!("href=\"{page}#:3\""),
         "href=\"/docs/Daily/notes\"",
         "src=\"/docs/Daily/pic.png\"",
+        "src=\"/docs/media/logo.png\" alt=\"logo.png\" width=\"20\"",
     ] {
         assert!(html.contains(want), "{want} in {html}");
     }

@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 use crate::IndexStorage;
 use crate::document::{DocumentTree, Extracted};
 use crate::entity::{EntitySpec, FieldValue, Records, Tag, Wikilink, builtin_entities};
-use crate::names::{FileKeys, LinkTarget, norm, path_to_url};
+use crate::names::{FileKeys, LinkTarget, image_type_of, norm, path_to_url};
 use crate::parse::{Host, parse};
 
 /// The version of what stored rows mean. Changes to [`SCHEMA`] are caught by
@@ -50,7 +50,9 @@ pub const AGENT_WIKI_APP_ID: i32 = 0x6177_696B;
 /// full-text fields, `entity_{name}_fts`. Wikilinks and tags are the
 /// built-in entity types `wikilink` and `tag` (see `Wikilink`, `Tag`).
 /// `page_fts` indexes `page`'s title and body as external content, kept
-/// current by the triggers.
+/// current by the triggers. `image` holds every image file (by
+/// [`image_type_of`]), keyed by its file name as a page is by its stem, so
+/// image embeds resolve by name.
 const SCHEMA: &str = "
 CREATE TABLE meta (root TEXT NOT NULL);
 CREATE TABLE page (
@@ -70,6 +72,14 @@ CREATE INDEX page_key_full ON page(key_full);
 CREATE INDEX page_key_stripped ON page(key_stripped);
 CREATE INDEX page_folder ON page(folder);
 CREATE INDEX page_recent ON page(edited DESC, path);
+CREATE TABLE image (
+    path TEXT PRIMARY KEY,
+    folder TEXT NOT NULL,
+    key_full TEXT NOT NULL,
+    key_stripped TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX image_key_full ON image(key_full);
+CREATE INDEX image_key_stripped ON image(key_stripped);
 CREATE TABLE entity_version (name TEXT PRIMARY KEY, version INTEGER NOT NULL) WITHOUT ROWID;
 CREATE VIRTUAL TABLE page_fts USING fts5(title, body, content='page', content_rowid='id',
     tokenize='unicode61 remove_diacritics 2');
@@ -100,6 +110,12 @@ const REMOVE_PATH: &str =
 /// [`subtree`]), never a page at the folder's own path; their records go
 /// with them.
 const REMOVE_FOLDER: &str = "DELETE FROM page WHERE path >= ?1 AND path < ?2 RETURNING path";
+
+/// [`REMOVE_PATH`] for images.
+const REMOVE_IMAGE_PATH: &str = "DELETE FROM image WHERE path = ?1 OR (path >= ?2 AND path < ?3)";
+
+/// [`REMOVE_FOLDER`] for images.
+const REMOVE_IMAGE_FOLDER: &str = "DELETE FROM image WHERE path >= ?1 AND path < ?2";
 
 /// `mtimes_under` for a folder: paths in `[?1, ?2)`.
 const MTIMES_IN: &str = "SELECT path, mtime FROM page WHERE path >= ?1 AND path < ?2";
@@ -362,10 +378,10 @@ impl<P: Host> Index<P> {
     /// one is not re-read (and keeps its stored edited time), every other
     /// file is (re)indexed, and stored pages the walk did not find are
     /// removed by exact path. An empty index is thus filled from scratch.
-    /// Edited times of the files written come from git for clean tracked
-    /// files, from the file's `mtime` otherwise. A file or subfolder that
-    /// can't be read is logged to stderr and skipped; only an unreadable
-    /// `root` is an error.
+    /// The stored images are replaced with the walk's. Edited times of the
+    /// files written come from git for clean tracked files, from the file's
+    /// `mtime` otherwise. A file or subfolder that can't be read is logged
+    /// to stderr and skipped; only an unreadable `root` is an error.
     ///
     /// The scan runs alongside the watcher, so it never replaces a row
     /// whose stored `mtime` is newer than the file it read, and a file
@@ -375,7 +391,9 @@ impl<P: Host> Index<P> {
         let committed = git_edited_times(root).await;
         let mut stored = self.mtimes_under("").await?;
         let stale = std::mem::take(&mut *self.stale.lock().unwrap());
-        for (rel, mtime) in collect_pages(root, "").await? {
+        let files = collect_files(root, "").await?;
+        self.set_images_under("", &files.images).await?;
+        for (rel, mtime) in files.pages {
             if stored.remove(&rel) == Some(mtime) {
                 if !stale.is_empty()
                     && let Err(e) = self.write_entities(root, &rel, &stale).await
@@ -552,21 +570,22 @@ impl<P: Host> Index<P> {
         Ok(!removed.is_empty())
     }
 
-    /// Removes the page at `rel_or_folder` and every page under it as a folder
-    /// prefix; returns the paths of the pages removed.
+    /// Removes the page or image at `rel_or_folder` and every page and image
+    /// under it as a folder prefix; returns the paths of the pages removed.
     pub async fn remove_path(&self, rel_or_folder: &str) -> Result<Vec<String>> {
         let (low, high) = subtree(rel_or_folder.trim_end_matches('/'));
         let params = [rel_or_folder, low.as_str(), high.as_str()];
         let conn = self.conn.lock().await;
         let tx = conn.transaction().await?;
         let removed = collect(tx.query(REMOVE_PATH, params).await?, |row| Ok(row.get(0)?)).await?;
+        tx.execute(REMOVE_IMAGE_PATH, params).await?;
         tx.commit().await?;
         Ok(removed)
     }
 
-    /// Removes every page under `folder` (its `[folder/, folder0)` subtree),
-    /// but not a page at `folder` itself; returns the paths of the pages
-    /// removed. For a path known to be a folder.
+    /// Removes every page and image under `folder` (its `[folder/, folder0)`
+    /// subtree), but not a page at `folder` itself; returns the paths of the
+    /// pages removed. For a path known to be a folder.
     pub async fn remove_folder(&self, folder: &str) -> Result<Vec<String>> {
         let (low, high) = subtree(folder.trim_end_matches('/'));
         let params = [low.as_str(), high.as_str()];
@@ -577,8 +596,62 @@ impl<P: Host> Index<P> {
             |row| Ok(row.get(0)?),
         )
         .await?;
+        tx.execute(REMOVE_IMAGE_FOLDER, params).await?;
         tx.commit().await?;
         Ok(removed)
+    }
+
+    /// Replaces the stored images in `folder` and below it (`""` is the
+    /// root) with `images`, rel paths under it.
+    pub async fn set_images_under(&self, folder: &str, images: &[String]) -> Result<()> {
+        let conn = self.conn.lock().await;
+        let tx = conn.transaction().await?;
+        if folder.is_empty() {
+            tx.execute("DELETE FROM image", ()).await?;
+        } else {
+            let (low, high) = subtree(folder);
+            tx.execute(REMOVE_IMAGE_FOLDER, [low, high]).await?;
+        }
+        insert_images(&tx, images).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Replaces the stored images directly in `folder` with `names`, the
+    /// image files a listing of it found.
+    pub async fn set_folder_images(&self, folder: &str, names: &[&str]) -> Result<()> {
+        let images: Vec<String> = names
+            .iter()
+            .map(|name| match folder {
+                "" => name.to_string(),
+                _ => format!("{folder}/{name}"),
+            })
+            .collect();
+        let conn = self.conn.lock().await;
+        let tx = conn.transaction().await?;
+        tx.execute("DELETE FROM image WHERE folder = ?1", [folder])
+            .await?;
+        insert_images(&tx, &images).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The images `target` names, as a wikilink names pages: by file name,
+    /// and narrowed by its folders when several match. Sorted by path.
+    pub async fn resolve_image(&self, target: &LinkTarget) -> Result<Vec<String>> {
+        let matches: Vec<(String, String)> = {
+            let conn = self.conn.lock().await;
+            let rows = conn
+                .query(
+                    "SELECT path, folder FROM image WHERE key_full = ?1 OR key_stripped = ?1
+                     ORDER BY path",
+                    [target.name_key.as_str()],
+                )
+                .await?;
+            collect(rows, |row| Ok((row.get(0)?, row.get(1)?))).await?
+        };
+        let matches = narrow(matches, &target.qualifier, |(_, folder)| folder);
+        Ok(matches.into_iter().map(|(path, _)| path).collect())
     }
 
     /// Stored `mtime` of each indexed page in `folder` or below it (`""` is
@@ -609,16 +682,7 @@ impl<P: Host> Index<P> {
             collect(rows, PageRef::from_row).await?
         };
         matches.sort_by(|a, b| a.path.cmp(&b.path));
-        if matches.len() > 1 && !target.qualifier.is_empty() {
-            let narrowed: Vec<PageRef> = matches
-                .iter()
-                .filter(|p| folder_ends_with(&p.folder, &target.qualifier))
-                .cloned()
-                .collect();
-            if !narrowed.is_empty() {
-                matches = narrowed;
-            }
-        }
+        let mut matches = narrow(matches, &target.qualifier, |p| &p.folder);
         Ok(match matches.len() {
             0 => Resolution::Missing,
             1 => Resolution::Unique(matches.remove(0)),
@@ -1247,6 +1311,33 @@ fn subfolders(prefix: &str, folders: impl Iterator<Item = String>) -> Vec<String
     names
 }
 
+/// `matches` narrowed to those whose folder ends with `qualifier`, when
+/// there are several and that leaves any.
+fn narrow<T>(matches: Vec<T>, qualifier: &[String], folder: impl Fn(&T) -> &str) -> Vec<T> {
+    if matches.len() < 2 || qualifier.is_empty() {
+        return matches;
+    }
+    let (narrowed, rest): (Vec<T>, Vec<T>) = matches
+        .into_iter()
+        .partition(|m| folder_ends_with(folder(m), qualifier));
+    if narrowed.is_empty() { rest } else { narrowed }
+}
+
+/// Inserts an `image` row for each rel path, replacing any at that path.
+async fn insert_images(conn: &Connection, images: &[String]) -> Result<()> {
+    for rel in images {
+        let keys = FileKeys::from_rel(rel);
+        let folder = rel.rsplit_once('/').map_or("", |(folder, _)| folder);
+        conn.execute(
+            "INSERT OR REPLACE INTO image (path, folder, key_full, key_stripped)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![rel.as_str(), folder, keys.full, keys.stripped],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 fn folder_ends_with(folder: &str, qualifier: &[String]) -> bool {
     let segments: Vec<String> = folder
         .split('/')
@@ -1256,15 +1347,24 @@ fn folder_ends_with(folder: &str, qualifier: &[String]) -> bool {
     segments.ends_with(qualifier)
 }
 
-/// Collects the rel paths of `.md` files under `rel_dir` (`""` is the root),
-/// each with its no-follow `mtime`, skipping hidden entries, symlinks and
-/// non-UTF-8 names. Entries and subfolders that can't be read are logged to
-/// stderr and skipped; only failing to read `rel_dir` itself is an error.
-/// Walks on the blocking thread pool.
-pub async fn collect_pages(root: &Path, rel_dir: &str) -> Result<Vec<(String, i64)>> {
+/// What [`collect_files`] finds.
+#[derive(Debug, Default)]
+pub struct Files {
+    /// `.md` files, each with its no-follow `mtime`.
+    pub pages: Vec<(String, i64)>,
+    /// Image files, by [`image_type_of`].
+    pub images: Vec<String>,
+}
+
+/// Collects the rel paths of `.md` and image files under `rel_dir` (`""` is
+/// the root), skipping hidden entries, symlinks and non-UTF-8 names.
+/// Entries and subfolders that can't be read are logged to stderr and
+/// skipped; only failing to read `rel_dir` itself is an error. Walks on the
+/// blocking thread pool.
+pub async fn collect_files(root: &Path, rel_dir: &str) -> Result<Files> {
     let (root, rel_dir) = (root.to_path_buf(), rel_dir.to_string());
     let walked = tokio::task::spawn_blocking(move || {
-        let mut out = Vec::new();
+        let mut out = Files::default();
         walk(&root, &rel_dir, &mut out).map(|()| out)
     });
     Ok(walked.await??)
@@ -1366,7 +1466,7 @@ fn mtime_of(time: std::time::SystemTime) -> i64 {
         .unwrap_or(0)
 }
 
-fn walk(root: &Path, rel_dir: &str, out: &mut Vec<(String, i64)>) -> std::io::Result<()> {
+fn walk(root: &Path, rel_dir: &str, out: &mut Files) -> std::io::Result<()> {
     let dir = root.join(rel_dir);
     for entry in std::fs::read_dir(&dir)? {
         let entry = match entry {
@@ -1402,9 +1502,11 @@ fn walk(root: &Path, rel_dir: &str, out: &mut Vec<(String, i64)>) -> std::io::Re
             }
         } else if kind.is_file() && name.ends_with(".md") {
             match entry.metadata() {
-                Ok(meta) => out.push((rel, mtime_nanos(&meta))),
+                Ok(meta) => out.pages.push((rel, mtime_nanos(&meta))),
                 Err(e) => eprintln!("agent_wiki: skipping {}: {e}", entry.path().display()),
             }
+        } else if kind.is_file() && image_type_of(&name).is_some() {
+            out.images.push(rel);
         }
     }
     Ok(())
@@ -1758,14 +1860,56 @@ mod tests {
     async fn mtimes_match_the_walk() {
         let root = fixture();
         let index = fixture_index().await;
-        let walked: HashMap<String, i64> = collect_pages(&root, "Projects")
+        let walked: HashMap<String, i64> = collect_files(&root, "Projects")
             .await
             .unwrap()
+            .pages
             .into_iter()
             .collect();
         assert_eq!(index.mtimes_under("Projects").await.unwrap(), walked);
         assert!(walked.values().all(|&m| m > 0));
         assert_eq!(index.mtimes_under("").await.unwrap().len(), 11);
+    }
+
+    #[tokio::test]
+    async fn images_resolve_by_name_and_narrow_by_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for rel in [
+            "a/Pic.png",
+            "b/c/pic.png",
+            "b/other.svg",
+            "b/.hidden.png",
+            "b/x.txt",
+        ] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+        }
+        let index = memory_index(&root).await;
+        index.scan(&root).await.unwrap();
+        let resolve = async |raw: &str| {
+            let target = LinkTarget::parse(raw).unwrap();
+            index.resolve_image(&target).await.unwrap()
+        };
+        assert_eq!(resolve("pic.png").await, ["a/Pic.png", "b/c/pic.png"]);
+        assert_eq!(resolve("C/pic.png").await, ["b/c/pic.png"]);
+        assert_eq!(
+            resolve("nowhere/pic.png").await,
+            ["a/Pic.png", "b/c/pic.png"]
+        );
+        assert_eq!(resolve("Other.SVG").await, ["b/other.svg"]);
+        for missing in ["pic", ".hidden.png", "x.txt"] {
+            assert!(resolve(missing).await.is_empty(), "{missing}");
+        }
+
+        index.remove_folder("b").await.unwrap();
+        assert_eq!(resolve("pic.png").await, ["a/Pic.png"]);
+        index.set_folder_images("a", &["new.png"]).await.unwrap();
+        assert!(resolve("pic.png").await.is_empty());
+        assert_eq!(resolve("new.png").await, ["a/new.png"]);
+        index.remove_path("a/new.png").await.unwrap();
+        assert!(resolve("new.png").await.is_empty());
     }
 
     async fn search(index: &Index<Plain>, query: &str) -> Vec<String> {

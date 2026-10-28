@@ -113,6 +113,7 @@ The data model layer: the document set as data, the index, and host entity types
 - Lives in this project.
 - **libSQL** (Turso's SQLite fork, the `libsql` crate). Switched from SurrealDB — Dave: "let's switch to libsql" — after a benchmark showed SurrealDB's memory growing on every reindex (in memory and on disk) while libSQL's stayed flat. The newer `turso` Rust rewrite was considered and set aside for now ("we can bench turso for the time being").
 - Indexes wikilinks and tags.
+  [PROVISIONAL: it also lists the image files, keyed by name as pages are, so an image embed can resolve by name (see Images and ordinary links in `agent_wiki.md`). The scan and the watcher keep the list current.]
 - **Kept current by watching files**, using a Rust library over the OS-provided file-watch mechanisms.
 
 ### Index storage

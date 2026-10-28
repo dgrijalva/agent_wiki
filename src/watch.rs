@@ -8,8 +8,8 @@ use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 use tokio::sync::mpsc;
 
-use crate::index::{FsKind, Index, collect_pages, fs_kind, list_folder};
-use crate::names::is_hidden;
+use crate::index::{FsKind, Index, collect_files, fs_kind, list_folder};
+use crate::names::{image_type_of, is_hidden};
 use crate::parse::Host;
 use crate::signals::{DocumentChange, Signals};
 
@@ -116,7 +116,8 @@ async fn apply_batch<P: Host>(
 }
 
 /// Applies the event `names` in `folder` against one listing of it, then
-/// drops indexed pages and subfolders of `folder` that the listing lacks.
+/// drops indexed pages and subfolders of `folder` that the listing lacks,
+/// and stores the listing's image files as the folder's images.
 async fn apply_folder<P: Host>(
     root: &Path,
     index: &Index<P>,
@@ -173,23 +174,30 @@ async fn apply_folder<P: Host>(
             remove_folder(index, &join(folder, &name), touched).await?;
         }
     }
-    Ok(())
+    let images: Vec<&str> = listing
+        .iter()
+        .filter(|(name, kind)| **kind == FsKind::File && image_type_of(name).is_some())
+        .map(|(name, _)| name.as_str())
+        .collect();
+    index.set_folder_images(folder, &images).await
 }
 
 /// Reindexes the pages under `folder` whose `mtime` differs from the stored
-/// one and drops indexed pages under it that are gone from disk. If `folder`
-/// itself can't be walked, its pages are removed. Errors are logged.
+/// one, drops indexed pages under it that are gone from disk, and replaces
+/// its stored images. If `folder` itself can't be walked, its pages and
+/// images are removed. Errors are logged.
 async fn rescan<P: Host>(root: &Path, index: &Index<P>, folder: &str, touched: &mut Touched) {
     let result = async {
-        let walked = match collect_pages(root, folder).await {
+        let walked = match collect_files(root, folder).await {
             Ok(walked) => walked,
             Err(e) => {
                 remove_folder(index, folder, touched).await?;
                 return Err(e);
             }
         };
+        index.set_images_under(folder, &walked.images).await?;
         let mut stored = index.mtimes_under(folder).await?;
-        for (rel, mtime) in &walked {
+        for (rel, mtime) in &walked.pages {
             if stored.remove(rel) == Some(*mtime) {
                 continue;
             }
