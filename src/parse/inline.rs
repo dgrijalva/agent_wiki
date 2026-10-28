@@ -11,7 +11,7 @@ use super::block::{LinkRef, close_tag, label_key, link_dest, link_title, open_ta
 use super::stream::InlineStream;
 use super::{Host, MAX_NESTING};
 use crate::names::image_type_of;
-use crate::tree::{BlockKind, Children, InlineKind, Node, Tree};
+use crate::tree::{BlockKind, Children, InlineKind, Node, TaskStatus, Tree};
 
 /// Parses every inline section the block phase left into the node it was
 /// given to. Sections no node was given (a host's hook built them, then
@@ -268,27 +268,31 @@ impl<'a, P: Host> InlineStream<'a, P> {
             || self.line_break(run, false)
     }
 
-    /// At a list item's start, `[ ]`, `[x]` or `[X]`, then whitespace and
-    /// more on the line: the item is a task. The checkbox and the
-    /// whitespace are consumed.
+    /// At a list item's start, `[c]` for a [`TaskStatus`] symbol `c`, then
+    /// whitespace and more on the line: the item is a task. The checkbox
+    /// and the whitespace are consumed.
     fn checkbox(&mut self) -> bool {
         let Some(item) = self.item.filter(|_| self.at_item_start()) else {
             return false;
         };
         let rest = self.rest();
-        let checked = match rest.get(..3) {
-            Some("[ ]") => false,
-            Some("[x]" | "[X]") => true,
-            _ => return false,
+        let mut chars = rest.chars();
+        let (Some('['), Some(symbol), Some(']')) = (chars.next(), chars.next(), chars.next())
+        else {
+            return false;
         };
-        let line = rest[3..].split('\n').next().unwrap_or_default();
+        let Some(status) = TaskStatus::from_symbol(symbol) else {
+            return false;
+        };
+        let after = chars.as_str();
+        let line = after.split('\n').next().unwrap_or_default();
         if !line.starts_with([' ', '\t']) || line.trim().is_empty() {
             return false;
         }
         if let Node::Block(BlockKind::ListItem { task }) = self.tree.arena[item].get_mut() {
-            *task = Some(checked);
+            *task = Some(status);
         }
-        self.pos = self.src.len() - rest[3..].trim_start_matches([' ', '\t']).len();
+        self.pos = self.src.len() - after.trim_start_matches([' ', '\t']).len();
         true
     }
 
@@ -1485,16 +1489,18 @@ mod tests {
                 &SampleHost,
                 "- [ ] a *b* [[ABC-1]]\n  c\n  - [ ] sub\n- [x] done\n- plain\n"
             ),
-            "<ul>\n<li><span class=\"todo\">a <em>b</em> \
+            "<ul class=\"contains-task-list\">\n<li><span class=\"todo\">a <em>b</em> \
              <span class=\"ticket\">ABC-1</span></span><br />\nc\n<ul>\n\
              <li><span class=\"todo\">sub</span></li>\n</ul>\n</li>\n\
-             <li><input type=\"checkbox\" checked=\"\" disabled=\"\" /> done</li>\n\
+             <li class=\"task-list-item\" data-task=\"x\">\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" checked=\"\" \
+             disabled=\"\" />done</li>\n\
              <li>plain</li>\n</ul>\n"
         );
         // Only at the start of an item's content, never of a paragraph.
         assert_eq!(
-            draw(&SampleHost, "[ ] a\n\n- b [ ] c\n- [?] d\n-\n  [ ] e\n"),
-            "<p>[ ] a</p>\n<ul>\n<li>b [ ] c</li>\n<li>[?] d</li>\n<li>[ ] e</li>\n</ul>\n"
+            draw(&SampleHost, "[ ] a\n\n- b [ ] c\n- [??] d\n-\n  [ ] e\n"),
+            "<p>[ ] a</p>\n<ul>\n<li>b [ ] c</li>\n<li>[??] d</li>\n<li>[ ] e</li>\n</ul>\n"
         );
     }
 

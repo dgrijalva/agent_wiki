@@ -1324,8 +1324,9 @@ mod tests {
              <ul data-line=\"41\">\n\
              <li data-line=\"41\">late</li>\n\
              </ul>\n\
-             <ol data-line=\"43\">\n\
-             <li data-line=\"43\"><input type=\"checkbox\" disabled=\"\" /> task</li>\n\
+             <ol data-line=\"43\" class=\"contains-task-list\">\n\
+             <li data-line=\"43\" class=\"task-list-item\" data-task=\" \">\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" />task</li>\n\
              </ol>\n\
              <blockquote data-line=\"44\">\n\
              <p data-line=\"44\">lazy<br />\n\
@@ -1386,9 +1387,30 @@ mod tests {
         assert_eq!(
             plain("3. a\n4. b\n\n- [ ] t\n- [x] u\n\n* x\n\n* y\n  1) n\n"),
             "<ol start=\"3\">\n<li>a</li>\n<li>b</li>\n</ol>\n\
-             <ul>\n<li><input type=\"checkbox\" disabled=\"\" /> t</li>\n\
-             <li><input type=\"checkbox\" checked=\"\" disabled=\"\" /> u</li>\n</ul>\n\
+             <ul class=\"contains-task-list\">\n\
+             <li class=\"task-list-item\" data-task=\" \">\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" />t</li>\n\
+             <li class=\"task-list-item\" data-task=\"x\">\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" checked=\"\" \
+             disabled=\"\" />u</li>\n</ul>\n\
              <ul>\n<li><p>x</p>\n</li>\n<li><p>y</p>\n<ol>\n<li>n</li>\n</ol>\n</li>\n</ul>\n"
+        );
+        // Any one character but a bracket or whitespace other than a space is a
+        // status.
+        let statuses = |md: &str| {
+            let html = plain(md);
+            html.split("data-task=\"")
+                .skip(1)
+                .map(|rest| rest.split('"').next().unwrap_or_default().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            statuses("- [X] a\n- [/] b\n- [-] c\n- [>] d\n- [é] e\n"),
+            ["x", "/", "-", "&gt;", "é"]
+        );
+        assert_eq!(
+            statuses("- [ab] a\n- [] b\n- [\t] c\n- []] d\n- [/]\n- [-]x\n"),
+            Vec::<String>::new()
         );
         // An ordered list must start at 1 to interrupt a paragraph.
         assert_eq!(plain("a\n2. b\n"), "<p>a<br />\n2. b</p>\n");
