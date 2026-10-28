@@ -15,7 +15,7 @@ use crate::Wiki;
 use crate::document::{DocumentTree, Extracted, OutlineHeading, slug};
 use crate::draw::{DrawCtx, DrawCx, Element, WikiHref, draw_blocks};
 use crate::entity::{Tag, Wikilink};
-use crate::index::{FsKind, Resolution, fs_kind};
+use crate::index::{FsKind, Resolution};
 use crate::names::{LinkTarget, encode_component, folder_url, path_to_url};
 use crate::parse::{Host, parse};
 use crate::query::filter::eq;
@@ -186,13 +186,18 @@ impl<P: Host> Document<P> {
     /// file reached without symlinks.
     pub(crate) async fn load(wiki: &Wiki<P>, path: &str) -> Result<Option<Document<P>>> {
         let root = &wiki.inner.root;
-        if !matches!(fs_kind(root, path).await, Ok(FsKind::File)) {
+        if !matches!(root.kind(path).await, Ok(FsKind::File)) {
             return Ok(None);
         }
-        let Ok(source) = tokio::fs::read_to_string(root.join(path)).await else {
+        let Ok(source) = root.read(path).await else {
             return Ok(None);
         };
-        let tree = parse(&*wiki.inner.host, &source);
+        Document::from_text(wiki, path, &source).await.map(Some)
+    }
+
+    /// Parses `source` as the document at `path`, which needn't exist.
+    pub(crate) async fn from_text(wiki: &Wiki<P>, path: &str, source: &str) -> Result<Document<P>> {
+        let tree = parse(&*wiki.inner.host, source);
         let ex = tree.extract();
         let edited = wiki
             .inner
@@ -204,14 +209,14 @@ impl<P: Host> Document<P> {
         let records = wiki.query::<Tag>().document(path).fetch().await?;
         let mut tags: Vec<String> = records.into_iter().map(|t| t.into_record().tag).collect();
         tags.sort();
-        Ok(Some(Document {
+        Ok(Document {
             wiki: wiki.clone(),
             path: path.to_string(),
             tree: Arc::new(tree),
             ex,
             tags,
             edited,
-        }))
+        })
     }
 
     /// The file's path from the root, e.g. `Notes/Daily.md`.
@@ -456,8 +461,7 @@ impl<P: Host> Wiki<P> {
         {
             return Ok(None);
         }
-        let root = &self.inner.root;
-        if matches!(fs_kind(root, path).await, Ok(FsKind::Dir)) {
+        if matches!(self.inner.root.kind(path).await, Ok(FsKind::Dir)) {
             return Ok(Some(Entry::Folder(Folder::new(
                 self.clone(),
                 path.to_string(),

@@ -9,6 +9,8 @@ mod mcp;
 mod names;
 mod parse;
 mod query;
+mod reference;
+mod root;
 mod signals;
 mod tabs;
 mod template;
@@ -38,8 +40,8 @@ pub use crate::entity::{
     DecodeError, EntityField, EntityType, Field, FieldKind, FieldValue, Records, Tag, Wikilink,
 };
 pub use crate::mcp::{
-    McpServer, OpenFiles, OpenFilesArgs, Overview, OverviewArgs, PageUrl, PageUrlArgs, Search,
-    SearchArgs, Tool, route,
+    McpServer, OpenFiles, OpenFilesArgs, Overview, OverviewArgs, PageUrl, PageUrlArgs,
+    ReadDocument, ReadDocumentArgs, Search, SearchArgs, Tool, route,
 };
 pub use crate::parse::{BlockStream, Host, InlineStream, Never, Plain};
 pub use crate::query::{Direction, Entity, Filter, Query, Sort, filter};
@@ -56,6 +58,7 @@ use notify::RecommendedWatcher;
 use notify_debouncer_mini::Debouncer;
 
 use crate::index::Index;
+use crate::root::Root;
 
 /// Where a [`Wiki`] keeps its index; see [`WikiBuilder::index_storage`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -86,7 +89,7 @@ impl<P: Host> Clone for Wiki<P> {
 }
 
 struct Inner<P: Host> {
-    root: PathBuf,
+    root: Root,
     /// Base path without trailing slash; `""` at the root.
     base: String,
     host: Arc<P>,
@@ -94,8 +97,9 @@ struct Inner<P: Host> {
     index: Index<P>,
     /// Host CSS emitted after the built-in stylesheet on every page.
     stylesheet: Option<String>,
-    /// Keeps the index current; dropping it stops the watch.
-    _watcher: Debouncer<RecommendedWatcher>,
+    /// Keeps the index current; dropping it stops the watch. `None` for
+    /// embedded files, which never change.
+    _watcher: Option<Debouncer<RecommendedWatcher>>,
     /// Becomes `true` once the initial background scan has finished.
     indexed: tokio::sync::watch::Receiver<bool>,
     /// Watches on documents and folders, and the open pages' channels.
@@ -104,6 +108,11 @@ struct Inner<P: Host> {
     tabs: tabs::Tabs,
     /// Makes the MCP endpoint's tools; holds no wiki, so no cycle.
     tools: mcp::ToolsFn<P>,
+    /// The reference documents, served at `{base}/_wiki/reference` as a wiki
+    /// of their own; `None` for the reference itself.
+    reference: Option<Wiki>,
+    /// Markdown drawn above the root's index page; the reference's own.
+    prompt: Option<&'static str>,
 }
 
 impl Wiki {
@@ -146,8 +155,16 @@ impl<P: Host> Wiki<P> {
     /// pages are served meanwhile, from an index that is filling.
     pub async fn reindex(&self) -> anyhow::Result<()> {
         let index = &self.inner.index;
-        index.reset(&self.inner.root).await?;
-        index.scan(&self.inner.root).await
+        match &self.inner.root {
+            Root::Disk(root) => {
+                index.reset(root).await?;
+                index.scan(root).await
+            }
+            Root::Embedded(files) => {
+                index.reset(std::path::Path::new(reference::PATH)).await?;
+                index.index_texts(files, reference::edited()).await
+            }
+        }
     }
 
     pub async fn indexed(&self) {
@@ -262,6 +279,7 @@ impl<P: Host> WikiBuilder<P> {
         let base = normalize_base(&self.base_path);
         let signals = Arc::new(signals::Signals::new(base.clone()));
         let watcher = watch::start(root.clone(), index.clone(), signals.clone())?;
+        let reference = reference::build(&base, self.stylesheet.clone()).await?;
         let (done, indexed) = tokio::sync::watch::channel(false);
         tokio::spawn({
             let (root, index) = (root.clone(), index.clone());
@@ -274,25 +292,27 @@ impl<P: Host> WikiBuilder<P> {
         });
         Ok(Wiki {
             inner: Arc::new(Inner {
-                root,
+                root: Root::Disk(root),
                 base,
                 host,
                 template: self.template,
                 index,
                 stylesheet: self.stylesheet,
-                _watcher: watcher,
+                _watcher: Some(watcher),
                 indexed,
                 signals,
                 tabs: tabs::Tabs::new(),
                 tools: self
                     .tools
                     .unwrap_or_else(|| Arc::new(|wiki: &Wiki<P>| wiki.tools())),
+                reference: Some(reference),
+                prompt: None,
             }),
         })
     }
 }
 
-fn normalize_base(base: &str) -> String {
+pub(crate) fn normalize_base(base: &str) -> String {
     let trimmed = base.trim_matches('/');
     if trimmed.is_empty() {
         String::new()

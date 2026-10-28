@@ -602,3 +602,22 @@ async fn document_pages_have_a_table_of_contents() {
     let body = ok_body(&app, "/flat").await;
     assert!(!body.contains("class=\"toc\""), "{body}");
 }
+
+#[tokio::test]
+async fn the_reference_is_served_under_wiki() {
+    let app = root_app().await;
+    let index = ok_body(&app, "/_wiki/reference/").await;
+    // The prompt, then the index.
+    let prompt = index.find("agent_wiki reference").unwrap();
+    let listing = index.find("/_wiki/reference/onboarding").unwrap();
+    assert!(prompt < listing, "{index}");
+    let page = ok_body(&app, "/_wiki/reference/onboarding").await;
+    assert!(page.contains("Onboarding"), "{page}");
+    let reply = get_path(&app, "/_wiki/reference").await;
+    assert_eq!(reply.location.as_deref(), Some("/_wiki/reference/"));
+    // Not in the wiki's own index or search.
+    let root = ok_body(&app, "/").await;
+    assert!(!root.contains("_wiki/reference"), "{root}");
+    let search = ok_body(&app, "/_wiki/search?q=onboarding").await;
+    assert!(!search.contains("/_wiki/reference/"), "{search}");
+}

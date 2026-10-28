@@ -12,8 +12,13 @@ How agents learn to use agent_wiki: the reference documents, the MCP tool that s
 - **Everything is reference documents.** "maybe we just eat our own dogfood and provide the reference all just as documents, baked in at build time, in a special path" (Dave, 2026-10-27)
   - **The content is ordinary agent_wiki content, in `reference/` at the repo root.** (Dave, 2026-10-27)
   - **Baked in at build time**, "probably via a small macro" (Dave, 2026-10-27).
+    [PROVISIONAL: the macro is `embed_folder!`, a function-like proc macro in the derive crate, which reads every `.md` file under the folder with `include_str!`.] Editing a file rebuilds the crate; a newly added file is only picked up when the crate next rebuilds for another reason.
   - **Hosted virtually at `{base}/_wiki/reference`, as if they were documents in the wiki.** (Dave, 2026-10-27)
   - **Reference documents are excluded everywhere except a search within `_wiki/reference`.** (Dave, 2026-10-27/28)
+  - **Served as a wiki of their own, with a separate in-memory index**, built at startup, rather than in the wiki's index. (Dave, 2026-10-28)
+  - [PROVISIONAL: the reference wiki draws with the `DefaultTemplate` and the host's stylesheet, not the host's template. Its pages have their own search box, which searches only the reference.]
+  - [PROVISIONAL: its documents' edited time is when the process started, since the build's time isn't known.]
+  - [PROVISIONAL: reference pages don't count as open for `open_files`.]
   - [OPEN: deferred — a host adding its own reference content. Dave (2026-10-27): "great idea. defer until we have the built in stuff working."]
 - **No per-agent skill formats.** Writing the reference out as skills for each agent is a rabbit hole, "since there are so many different agents out there. i don't want to figure that out. the agents can on their side." (Dave, 2026-10-27)
 - [OPEN: deferred — how the CLI exposes the reference. "build them into probably both the cli and mcp as reference" (Dave, 2026-10-27).] The CLI today is `agent_wiki <folder>` with no subcommands.
@@ -22,9 +27,13 @@ How agents learn to use agent_wiki: the reference documents, the MCP tool that s
 
 - **A minimal instruction set on connect.** It tells the agent the reference is available at its path. (Dave, 2026-10-27)
 - **The reference's index page is the agent's entry point.** (Dave, 2026-10-27) It is a custom index page: a prompt, in addition to the actual index. (Dave, 2026-10-28)
+  [PROVISIONAL: the prompt is `reference/README.md`, drawn above the index. It is not a document of the reference, so GitHub shows the same prompt above the folder's files.]
+- [PROVISIONAL: the instructions on connect give the wiki root, say paths are relative to it, and say the reference explains the wiki and its tools, read with `read_document` at `_wiki/reference`.] The usage notes they carried moved to the reference.
 - **No separate reference tool.** The agent reads reference documents with the `read_document` tool, like any other document (see `mcp.md`). (Dave, 2026-10-27)
 
 ## Reference documents
+
+- **Written for an agent as capable as the one writing them.** "anyone using opus or equivalent will get an agent that knows roughly what you know." The reference doesn't spell out what the agent already knows, such as how to run a service: "the agent on the other side will know what tools available and be way more familiar with the user's environment." (Dave, 2026-10-28)
 
 ### Using the MCP
 

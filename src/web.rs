@@ -15,10 +15,11 @@ use tokio_stream::StreamExt;
 use crate::Wiki;
 use crate::components::{DisambiguationBody, FolderIndexBody, NotFoundBody, SearchBody, TagBody};
 use crate::data::{Document, Folder};
-use crate::index::{FsKind, fs_kind};
+use crate::index::FsKind;
 use crate::links::local_href;
 use crate::names::{encode_component, image_type_of, url_to_path, url_to_rel};
 use crate::parse::Host;
+use crate::root::Root;
 use crate::tabs::PushedState;
 use crate::template::{BodyCtx, DocumentMeta, HeadCtx, PageKind, Template};
 
@@ -226,11 +227,16 @@ pub fn router<P: Host, S: Clone + Send + Sync + 'static>(wiki: Wiki<P>) -> Route
         .route(&format!("{base}/_wiki/search"), get(search_page::<P>))
         .route(&format!("{base}/_wiki/events"), get(page_events::<P>))
         .route(&format!("{base}/_wiki/state"), post(push_state::<P>))
-        .route_service(
-            &format!("{base}/_wiki/mcp"),
-            crate::mcp::service(wiki.clone()),
-        )
         .route(&format!("{base}/{{*path}}"), get(path_page::<P>));
+    // The reference is served from the wiki's endpoint, so it has none.
+    if let Some(reference) = &wiki.inner.reference {
+        router = router
+            .route_service(
+                &format!("{base}/_wiki/mcp"),
+                crate::mcp::service(wiki.clone()),
+            )
+            .merge(reference.router());
+    }
     if !base.is_empty() {
         let to = format!("{base}/");
         router = router.route(&base, get(move || async move { Redirect::permanent(&to) }));
@@ -421,8 +427,8 @@ async fn path_page<P: Host>(State(wiki): State<Wiki<P>>, request: Parts) -> Resu
     if let Some(content_type) = image_type_of(path) {
         return Ok(image(&wiki, &request, path, content_type).await);
     }
-    // Existence comes from the disk, not the index, so pages are served while
-    // the index is still filling.
+    // Existence comes from the files, not the index, so pages are served
+    // while the index is still filling.
     let root = &wiki.inner.root;
     if is_kind(root, &rel, FsKind::File).await {
         return page_view(&wiki, &request, &rel).await;
@@ -439,16 +445,18 @@ async fn path_page<P: Host>(State(wiki): State<Wiki<P>>, request: Parts) -> Resu
     Ok(not_found(&wiki, &request).await)
 }
 
-/// The image file at `rel`, sent whole, if it is a file reached without
-/// symlinks; otherwise 404.
+/// The image file at `rel`, sent whole, if it is a file on disk reached
+/// without symlinks; otherwise 404.
 async fn image<P: Host>(
     wiki: &Wiki<P>,
     request: &Parts,
     rel: &str,
     content_type: &'static str,
 ) -> Response {
-    let root = &wiki.inner.root;
-    if !is_kind(root, rel, FsKind::File).await {
+    let Some(root) = wiki.inner.root.disk() else {
+        return not_found(wiki, request).await;
+    };
+    if !is_kind(&wiki.inner.root, rel, FsKind::File).await {
         return not_found(wiki, request).await;
     }
     match tokio::fs::read(root.join(rel)).await {
@@ -459,8 +467,8 @@ async fn image<P: Host>(
 
 /// True when `root/rel` is of `kind`, checked without following symlinks
 /// (any error counts as no).
-async fn is_kind(root: &std::path::Path, rel: &str, kind: FsKind) -> bool {
-    matches!(fs_kind(root, rel).await, Ok(k) if k == kind)
+async fn is_kind(root: &Root, rel: &str, kind: FsKind) -> bool {
+    matches!(root.kind(rel).await, Ok(k) if k == kind)
 }
 
 /// Draws the document at `rel`, which the caller has checked is a file
@@ -560,6 +568,14 @@ async fn folder_page<P: Host>(wiki: &Wiki<P>, request: &Parts, folder: &str) -> 
         return Ok(not_found(wiki, request).await);
     }
     let body = FolderIndexBody::load(&Folder::new(wiki.clone(), folder.to_string())).await?;
+    let prompt = match wiki.inner.prompt.filter(|_| folder.is_empty()) {
+        Some(text) => Some(Document::from_text(wiki, "", text).await?),
+        None => None,
+    };
+    let prompt = match &prompt {
+        Some(doc) => Some(doc.body().await?),
+        None => None,
+    };
     let parent = folder.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
     let page = Page {
         kind: PageKind::FolderIndex {
@@ -569,7 +585,12 @@ async fn folder_page<P: Host>(wiki: &Wiki<P>, request: &Parts, folder: &str) -> 
         crumbs: (!folder.is_empty()).then_some(parent),
         live: None,
     };
-    let content = |ctx: &BodyCtx<'_, P>| ctx.draw(&body);
+    let content = |ctx: &BodyCtx<'_, P>| {
+        html! {
+            @if let Some(prompt) = &prompt { (ctx.draw(prompt)) }
+            (ctx.draw(&body))
+        }
+    };
     Ok(Html(draw_page(wiki, request, page, &content).await).into_response())
 }
 

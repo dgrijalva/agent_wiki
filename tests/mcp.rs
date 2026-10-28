@@ -5,7 +5,7 @@ use std::path::Path;
 
 use agent_wiki::{
     DefaultTemplate, OpenFiles, OpenFilesArgs, Overview, OverviewArgs, PageUrl, PageUrlArgs, Plain,
-    Search, SearchArgs, Tool, Wiki, route,
+    ReadDocument, ReadDocumentArgs, Search, SearchArgs, Tool, Wiki, route,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -104,6 +104,7 @@ async fn overview_of_a_document() {
     let want = "\
 path: projects/alpha.md
 title: Alpha Project
+lines: 18
 summary: The alpha rocket.
 frontmatter:
   title: Alpha Project
@@ -180,6 +181,10 @@ async fn over_http() {
         instructions.contains(&format!("The wiki root is `{}`", root.display())),
         "{instructions}"
     );
+    assert!(
+        instructions.contains("`read_document` at path `_wiki/reference`"),
+        "{instructions}"
+    );
 
     let list = rpc(
         &app,
@@ -192,7 +197,16 @@ async fn over_http() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["open_files", "overview", "page_url", "search"]);
+    assert_eq!(
+        names,
+        [
+            "open_files",
+            "overview",
+            "page_url",
+            "read_document",
+            "search"
+        ]
+    );
 
     let call = rpc(
         &app,
@@ -420,7 +434,10 @@ async fn the_builder_sets_the_endpoints_tools() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["count", "overview", "page_url", "search"]);
+    assert_eq!(
+        names,
+        ["count", "overview", "page_url", "read_document", "search"]
+    );
 
     let call = rpc(
         &app,
@@ -446,4 +463,155 @@ async fn tools_set_before_host_fail_the_build() {
         err.to_string(),
         "`.tools` was set before `.host()`; set it after"
     );
+}
+
+fn read_args(path: &str) -> ReadDocumentArgs {
+    ReadDocumentArgs {
+        path: path.into(),
+        lines: None,
+        sections: None,
+    }
+}
+
+#[tokio::test]
+async fn read_a_whole_document_or_lines() {
+    let dir = folder();
+    let read = ReadDocument::new(open(&dir).await);
+    let whole = read.call(read_args("projects/beta")).await.unwrap();
+    assert_eq!(whole, "# Beta\n\nAnother rocket.\n");
+    let lines = |range: &str| ReadDocumentArgs {
+        lines: Some(range.into()),
+        ..read_args("projects/alpha.md")
+    };
+    let want = "# Alpha\n\nThe alpha rocket.\n";
+    assert_eq!(read.call(lines("6-8")).await.unwrap(), want);
+    assert_eq!(read.call(lines("L6-L8")).await.unwrap(), want);
+    assert_eq!(read.call(lines("17-")).await.unwrap(), "\n# Appendix\n");
+    assert_eq!(read.call(lines("L17-end")).await.unwrap(), "\n# Appendix\n");
+    // An end past the last line stops there.
+    assert_eq!(read.call(lines("18-99")).await.unwrap(), "# Appendix\n");
+    for bad in ["0-3", "8-6", "six", "19-"] {
+        assert!(read.call(lines(bad)).await.is_err(), "{bad}");
+    }
+}
+
+#[tokio::test]
+async fn read_sections_by_anchor() {
+    let dir = folder();
+    let read = ReadDocument::new(open(&dir).await);
+    let sections = |anchors: &[&str]| ReadDocumentArgs {
+        sections: Some(anchors.iter().map(|a| a.to_string()).collect()),
+        ..read_args("projects/alpha")
+    };
+    // A section runs to the next heading of the same or a higher level.
+    let status = read.call(sections(&["status"])).await.unwrap();
+    assert_eq!(
+        status,
+        "## Status\n\nFine. #active\n\n### Risks\n\n\
+         See [[Beta]] and [[Notes]] and [[Nowhere]] and [[Beta]].\n\n"
+    );
+    let two = read.call(sections(&["risks", "#appendix"])).await.unwrap();
+    assert_eq!(
+        two,
+        "### Risks\n\nSee [[Beta]] and [[Notes]] and [[Nowhere]] and [[Beta]].\n\n\n\
+         # Appendix\n"
+    );
+    let err = read.call(sections(&["nope"])).await.unwrap_err();
+    assert_eq!(err.to_string(), "no section #nope in projects/alpha.md");
+    let both = ReadDocumentArgs {
+        lines: Some("1-2".into()),
+        ..sections(&["status"])
+    };
+    let err = read.call(both).await.unwrap_err();
+    assert_eq!(err.to_string(), "give lines or sections, not both");
+}
+
+#[tokio::test]
+async fn read_a_folder_index() {
+    let dir = folder();
+    let read = ReadDocument::new(open(&dir).await);
+    let root = read.call(read_args("")).await.unwrap();
+    assert_eq!(
+        root,
+        "folder: /\n\nfolders:\n  notes/\n  other/\n  projects/\n\n\
+         documents:\n  rocket.md — Rocket\n    About rockets.\n"
+    );
+    let projects = read.call(read_args("projects")).await.unwrap();
+    assert_eq!(
+        projects,
+        "folder: projects/\n\ndocuments:\n\
+         \x20 projects/alpha.md — Alpha Project  #active  #plan\n    The alpha rocket.\n\
+         \x20 projects/beta.md — Beta\n    Another rocket.\n"
+    );
+    assert_eq!(read.call(read_args("projects/")).await.unwrap(), projects);
+}
+
+#[tokio::test]
+async fn the_reference_is_only_found_inside_it() {
+    let dir = folder();
+    let wiki = open(&dir).await;
+    let search = Search::new(wiki.clone());
+    let everywhere = search
+        .call(SearchArgs {
+            query: "onboarding".into(),
+            folder: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(everywhere, "No matches.");
+    let inside = search
+        .call(SearchArgs {
+            query: "onboarding".into(),
+            folder: Some("_wiki/reference".into()),
+        })
+        .await
+        .unwrap();
+    assert!(
+        inside.starts_with("_wiki/reference/onboarding.md — Onboarding\n"),
+        "{inside}"
+    );
+
+    let read = ReadDocument::new(wiki.clone());
+    let index = read.call(read_args("_wiki/reference")).await.unwrap();
+    assert!(
+        index.starts_with("folder: _wiki/reference/\n\n# agent_wiki reference\n"),
+        "{index}"
+    );
+    assert!(
+        index.contains("\n  _wiki/reference/onboarding.md — Onboarding\n"),
+        "{index}"
+    );
+    // The root's own index doesn't list it.
+    let root = read.call(read_args("")).await.unwrap();
+    assert!(!root.contains("_wiki"), "{root}");
+
+    let doc = read
+        .call(read_args("_wiki/reference/onboarding"))
+        .await
+        .unwrap();
+    assert!(doc.starts_with("# Onboarding\n"), "{doc}");
+    let overview = Overview::new(wiki.clone())
+        .call(OverviewArgs {
+            path: "/_wiki/reference/using-the-mcp.md".into(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        overview.starts_with("path: _wiki/reference/using-the-mcp.md\ntitle: Using the MCP\n"),
+        "{overview}"
+    );
+    let url = PageUrl::new(wiki)
+        .call(PageUrlArgs {
+            path: "_wiki/reference/onboarding".into(),
+            line: None,
+            heading: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(url, "/_wiki/reference/onboarding");
+    let err = read
+        .call(read_args("_wiki/reference/nope"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), "no document at _wiki/reference/nope.md");
 }

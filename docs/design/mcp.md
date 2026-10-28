@@ -100,6 +100,7 @@ agent_wiki serves an MCP server so agents can work with the wiki. (Dave, 2026-10
 - **The summary, if available.** (Dave, 2026-10-20)
 - **Page stats**, so the agent can decide how to consume the document. (Dave, 2026-10-28) "page size is probably very useful for how the agent decides to consume a file"
   - **Size is given in lines.** (Dave, 2026-10-28)
+    [PROVISIONAL: a `lines: N` line after the title.]
 - [PROVISIONAL: output, with sections that have nothing in them left out:]
   ```
   path: projects/foo.md
@@ -138,6 +139,9 @@ agent_wiki serves an MCP server so agents can work with the wiki. (Dave, 2026-10
   - [OPEN: deferred — searching within the document, returning the blocks or sections that contain the match plus where they are in the file. Dave (2026-10-28): "maybe later".]
 - **No overview mode.** The doc overview tool already gives the overview, and stays where it is. (Dave, 2026-10-28)
 - **Reading an index page returns something like the web view, to start: the file list with some brief preview content.** (Dave, 2026-10-28)
+  [PROVISIONAL: `folder: <path>/`, the reference's prompt at its root, then `folders:` (one path each) and `documents:`, each as `search` gives it: path, title and tags, then its summary. A path that is `""`, ends in `/`, or is a folder with no document of the same name reads the index.]
+- [PROVISIONAL: a document, a range or a section is returned as its source text, without line numbers. Several sections are joined by a blank line. A range ending past the last line stops there; one starting past it is an error.]
+- [PROVISIONAL: a section's lines run from its heading's line to the line before the next outline heading of the same or a higher level.]
 
 ### Tool ideas
 

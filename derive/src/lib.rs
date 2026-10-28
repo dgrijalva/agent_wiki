@@ -1,5 +1,6 @@
 //! `#[derive(EntityType)]` for agent_wiki: a struct whose records the index
-//! keeps in a table of their own.
+//! keeps in a table of their own. And `embed_folder!`, which bakes a folder
+//! of markdown into the build.
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -119,6 +120,54 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
             }
         }
     })
+}
+
+/// The `.md` files under a folder, relative to the invoking crate's
+/// manifest directory, as a `&'static [(&str, &str)]` of each file's
+/// `/`-separated path within the folder and its text, sorted by path. Each
+/// file is read with `include_str!`, so editing one rebuilds the crate.
+#[proc_macro]
+pub fn embed_folder(input: TokenStream) -> TokenStream {
+    let folder = parse_macro_input!(input as LitStr);
+    match embed(&folder) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+fn embed(folder: &LitStr) -> syn::Result<proc_macro2::TokenStream> {
+    let error = |e: &dyn std::fmt::Display| syn::Error::new_spanned(folder, e.to_string());
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").map_err(|e| error(&e))?;
+    let root = std::path::Path::new(&manifest).join(folder.value());
+    let mut files = Vec::new();
+    collect_md(&root, "", &mut files).map_err(|e| error(&format!("{}: {e}", root.display())))?;
+    files.sort();
+    let entries = files.iter().map(|rel| {
+        let abs = root.join(rel).to_string_lossy().into_owned();
+        quote! { (#rel, include_str!(#abs)) }
+    });
+    Ok(quote! { &[#(#entries),*] })
+}
+
+fn collect_md(root: &std::path::Path, rel: &str, out: &mut Vec<String>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(root.join(rel))? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let path = if rel.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel}/{name}")
+        };
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            collect_md(root, &path, out)?;
+        } else if kind.is_file() && name.ends_with(".md") {
+            out.push(path);
+        }
+    }
+    Ok(())
 }
 
 /// `TicketRef` → `ticket_ref`.

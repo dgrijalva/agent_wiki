@@ -2,6 +2,8 @@
 
 Host a folder of markdown files as a website. A Rust/axum library plus a thin binary, built to be embedded in other applications that wrap it in their own auth and tooling.
 
+**Agents:** if you were asked to install or set up agent_wiki, read [`reference/onboarding.md`](reference/onboarding.md). The [reference](reference/) is written for you.
+
 ## Status
 
 Early prototype. The API will change.
@@ -18,14 +20,20 @@ Early prototype. The API will change.
 - **Images** and ordinary links resolve relative to the page, or from the root with a leading `/`, and never leave the root folder.
 - **Styling:** a built-in stylesheet with dark mode. A host stylesheet can be layered on top or replace it.
 - **Startup is immediate.** The folder is indexed in the background while pages are served.
-- **MCP server** for agents: search, document overviews, links into the web view, and what the user has open and selected. See [MCP](#mcp).
+- **MCP server** for agents: search, document overviews, reading documents by line range or section, links into the web view, and what the user has open and selected. See [MCP](#mcp).
+- **A reference for agents**, built in and served at `{base}/_wiki/reference`: using the MCP, onboarding, and building your own application. Its source is [`reference/`](reference/).
 - **Layered API** for hosts: the whole wiki as a router, a page template, replaceable page bodies, page components, and the documents and index as data, down to the host's own indexed record types. See [Extending with a host](#extending-with-a-host).
 
 ## Quick start
 
+Requirements: a Rust toolchain with `cargo`, and `git`.
+
 ```sh
-cargo run -- <folder> [--port N] [--index <path>] [--reindex]
+cargo install --git https://github.com/dgrijalva/agent_wiki agent_wiki
+agent_wiki <folder> [--port N] [--index <path>] [--reindex]
 ```
+
+Or from a checkout, `cargo run -- <folder>`.
 
 Serves on `127.0.0.1`, port 3000 by default. Ctrl-C starts a graceful shutdown; a second Ctrl-C quits.
 
@@ -46,11 +54,12 @@ claude mcp add --transport http agent_wiki http://127.0.0.1:3000/_wiki/mcp
 Tools:
 
 - **`search`**: a query and an optional folder. Each result is the document's path, title and tags, then its summary.
-- **`overview`**: a document's title, summary, frontmatter, outline (each heading with its line number and anchor) and resolved wikilinks, so an agent can read just the section it needs.
+- **`overview`**: a document's title, size in lines, summary, frontmatter, outline (each heading with its line number and anchor) and resolved wikilinks, so an agent can read just the section it needs.
+- **`read_document`**: a document whole, a line range (`lines`: `12-40`, `L12-L40`, `12-`, `L12-end`), or sections by anchor (`sections`); not both. A folder's path gives its index.
 - **`page_url`**: a document, plus an optional line or heading, gives its URL in the web view, to hand the user a link.
 - **`open_files`**: the documents open in the web view, most recently active first, with which one has focus and the selection as a line range.
 
-Paths in results are relative to the wiki root; the server's instructions give the root's absolute path once, on connect. Each document page also has a **Copy path** button that copies its root-relative path, for pasting to an agent.
+Paths in results are relative to the wiki root; the server's instructions give the root's absolute path once, on connect, and point the agent to the reference at `_wiki/reference`. The reference is left out of search, indexes and listings, except a search whose `folder` is in `_wiki/reference`. Each document page also has a **Copy path** button that copies its root-relative path, for pasting to an agent.
 
 Local use only, for now: `open_files` reports every browser's open pages, and requests are only accepted when addressed to `localhost`, `127.0.0.1` or `::1`.
 

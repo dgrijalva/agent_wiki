@@ -438,10 +438,34 @@ impl<P: Host> Index<P> {
             }) if mtime <= started => committed,
             _ => mtime.div_euclid(1_000_000_000),
         };
-        let (page, records) = rows_for(&*self.host, rel, &source, mtime, edited);
+        self.store(rel, &source, mtime, edited, scan.is_some())
+            .await
+    }
+
+    /// Indexes files that aren't on disk, such as those baked into the
+    /// build: each `/`-separated path (with `.md`) and its text, all dated
+    /// `edited` (seconds since the epoch), with an `mtime` of 0.
+    pub async fn index_texts(&self, files: &[(&str, &str)], edited: i64) -> Result<()> {
+        for (rel, source) in files {
+            self.store(rel, source, 0, edited, false).await?;
+        }
+        Ok(())
+    }
+
+    /// Writes one page's rows from its text, in one transaction. With
+    /// `scan`, writes nothing if the stored row's `mtime` is newer.
+    async fn store(
+        &self,
+        rel: &str,
+        source: &str,
+        mtime: i64,
+        edited: i64,
+        scan: bool,
+    ) -> Result<()> {
+        let (page, records) = rows_for(&*self.host, rel, source, mtime, edited);
         let conn = self.conn.lock().await;
         let tx = conn.transaction().await?;
-        if scan.is_some() {
+        if scan {
             let stored = first_i64(&tx, "SELECT mtime FROM page WHERE path = ?1", [rel]).await?;
             if stored.is_some_and(|stored| stored > page.mtime) {
                 return Ok(());

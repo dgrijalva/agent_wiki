@@ -24,11 +24,13 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::document::DocumentTree;
-use crate::index::{FsKind, Resolution, fs_kind};
+use crate::data::Folder;
+use crate::document::{DocumentTree, OutlineHeading};
+use crate::index::{FsKind, Resolution};
 use crate::names::{LinkTarget, path_to_url};
 use crate::parse::{Host, parse};
-use crate::{Inner, Wiki};
+use crate::reference;
+use crate::{Plain, Wiki};
 
 /// A tool an agent can call. Implementors hold whatever they need (the
 /// built-in tools hold a [`Wiki`]); [`route`] adapts one to rmcp.
@@ -101,6 +103,7 @@ impl<P: Host> Wiki<P> {
         ToolRouter::new()
             .with_route(route(Search::new(self.clone())))
             .with_route(route(Overview::new(self.clone())))
+            .with_route(route(ReadDocument::new(self.clone())))
             .with_route(route(OpenFiles::new(self.clone())))
             .with_route(route(PageUrl::new(self.clone())))
     }
@@ -143,20 +146,34 @@ impl<P: Host> ServerHandler for McpServer<P> {
     }
 }
 
-/// What the agent is told once, on connecting: how to use the tools, and
-/// where the wiki root is, since results give paths relative to it.
-fn instructions(root: &std::path::Path) -> String {
+/// What the agent is told once, on connecting: where the wiki root is,
+/// since results give paths relative to it, and where the reference is,
+/// which says the rest.
+fn instructions(root: Option<&std::path::Path>) -> String {
+    let root = root.map_or_else(String::new, |root| {
+        format!(" The wiki root is `{}`;", root.display())
+    });
     format!(
-        "A wiki of markdown files. The wiki root is `{}`; paths in results are relative to it. \
-         {USAGE}",
-        root.display()
+        "A wiki of markdown files.{root} paths in results are relative to the wiki root. \
+         How to use this wiki and its tools is in its reference: read it with `read_document` \
+         at path `{}`.",
+        reference::PATH
     )
 }
 
-const USAGE: &str = "Use `search` to find documents, and `overview` to see a document's outline (with \
-line numbers) before reading the part you need. Use `page_url` to link the user to a page, a \
-line or a heading in the wiki's web view. Use `open_files` to see what the user has \
-open in the wiki's web view, and what they have selected.";
+/// What a reference path's results are prefixed with.
+fn reference_prefix() -> String {
+    format!("{}/", reference::PATH)
+}
+
+impl<P: Host> Wiki<P> {
+    /// The reference wiki and the rest of `path` in it, if `path` (relative
+    /// to the wiki root) is in the reference.
+    fn in_reference<'a>(&'a self, path: &'a str) -> Option<(&'a Wiki<Plain>, &'a str)> {
+        let reference = self.inner.reference.as_ref()?;
+        Some((reference, reference::within(path)?))
+    }
+}
 
 /// Makes the collection the endpoint serves; see
 /// [`WikiBuilder::tools`](crate::WikiBuilder::tools).
@@ -169,7 +186,7 @@ pub(crate) fn service<P: Host>(
     let config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
         .with_json_response(true);
-    let instructions: Arc<str> = instructions(&wiki.inner.root).into();
+    let instructions: Arc<str> = instructions(wiki.inner.root.disk()).into();
     StreamableHttpService::new(
         move || {
             Ok(McpServer {
@@ -191,7 +208,8 @@ pub struct Search<P: Host> {
 pub struct SearchArgs {
     /// Words to search for.
     pub query: String,
-    /// Only documents under this folder, relative to the wiki root.
+    /// Only documents under this folder, relative to the wiki root. The
+    /// reference is only searched when this is in it.
     pub folder: Option<String>,
 }
 
@@ -209,40 +227,54 @@ Results are ranked title matches, then tag matches, then body matches. Each resu
 document's path, title and tags, then its summary.";
 
     async fn call(&self, args: SearchArgs) -> Result<String> {
-        let index = &self.wiki.inner.index;
-        let folder = args
-            .folder
-            .as_deref()
-            .map(|f| f.trim_matches('/'))
-            .filter(|f| !f.is_empty())
-            .map(|f| format!("{f}/"));
-        let pages: Vec<_> = index
-            .search(&args.query)
-            .await?
-            .into_iter()
-            .filter(|p| folder.as_ref().is_none_or(|f| p.path.starts_with(f)))
-            .collect();
-        if pages.is_empty() {
-            return Ok("No matches.".to_string());
-        }
-        let paths: Vec<String> = pages.iter().map(|p| p.path.clone()).collect();
-        let details = index.details(&paths).await?;
-        let mut out = String::new();
-        for page in &pages {
-            write!(out, "{} — {}", page.path, page.title)?;
-            let details = details.get(&page.path);
-            if let Some(details) = details {
-                for tag in &details.tags {
-                    write!(out, "  #{tag}")?;
-                }
+        let folder = args.folder.as_deref().unwrap_or("");
+        match self.wiki.in_reference(folder) {
+            Some((reference, rest)) => {
+                search(reference, &reference_prefix(), &args.query, rest).await
             }
-            out.push('\n');
-            if let Some(details) = details.filter(|d| !d.summary.is_empty()) {
-                writeln!(out, "  {}", details.summary)?;
-            }
+            None => search(&self.wiki, "", &args.query, folder).await,
         }
-        Ok(out)
     }
+}
+
+/// `wiki`'s documents under `folder` matching `query`, with each path
+/// given as `prefix` and the path in `wiki`.
+async fn search<P: Host>(
+    wiki: &Wiki<P>,
+    prefix: &str,
+    query: &str,
+    folder: &str,
+) -> Result<String> {
+    let index = &wiki.inner.index;
+    let folder = Some(folder.trim_matches('/'))
+        .filter(|f| !f.is_empty())
+        .map(|f| format!("{f}/"));
+    let pages: Vec<_> = index
+        .search(query)
+        .await?
+        .into_iter()
+        .filter(|p| folder.as_ref().is_none_or(|f| p.path.starts_with(f)))
+        .collect();
+    if pages.is_empty() {
+        return Ok("No matches.".to_string());
+    }
+    let paths: Vec<String> = pages.iter().map(|p| p.path.clone()).collect();
+    let details = index.details(&paths).await?;
+    let mut out = String::new();
+    for page in &pages {
+        write!(out, "{prefix}{} — {}", page.path, page.title)?;
+        let details = details.get(&page.path);
+        if let Some(details) = details {
+            for tag in &details.tags {
+                write!(out, "  #{tag}")?;
+            }
+        }
+        out.push('\n');
+        if let Some(details) = details.filter(|d| !d.summary.is_empty()) {
+            writeln!(out, "  {}", details.summary)?;
+        }
+    }
+    Ok(out)
 }
 
 /// A document's shape without its full text: title, summary, frontmatter,
@@ -267,74 +299,276 @@ impl<P: Host> Tool for Overview<P> {
     type Args = OverviewArgs;
     const NAME: &'static str = "overview";
     const DESCRIPTION: &'static str = "Inspect a document without reading all of it: its \
-title, summary, frontmatter, outline (each heading with the line it starts on and its anchor), \
-and the documents its wikilinks resolve to. Use the outline's line numbers to read just the \
-section you need.";
+title, size in lines, summary, frontmatter, outline (each heading with the line it starts on \
+and its anchor), and the documents its wikilinks resolve to. Use the outline to read just the \
+lines or sections you need with `read_document`.";
 
     async fn call(&self, args: OverviewArgs) -> Result<String> {
-        let inner = &self.wiki.inner;
-        let (rel, doc) = load(inner, &args.path).await?;
-        let ex = doc.extract();
-        let name = rel.rsplit('/').next().unwrap_or(&rel);
-
-        let mut out = String::new();
-        writeln!(out, "path: {rel}")?;
-        writeln!(
-            out,
-            "title: {}",
-            ex.title(name.strip_suffix(".md").unwrap_or(name))
-        )?;
-        let summary = ex.summary();
-        if !summary.is_empty() {
-            writeln!(out, "summary: {summary}")?;
+        match self.wiki.in_reference(&args.path) {
+            Some((reference, rest)) => overview(reference, &reference_prefix(), rest).await,
+            None => overview(&self.wiki, "", &args.path).await,
         }
-        if let Some(frontmatter) = doc.frontmatter.as_ref().filter(|f| !is_empty(f)) {
-            writeln!(out, "frontmatter:")?;
-            for line in serde_norway::to_string(frontmatter)?.lines() {
-                writeln!(out, "  {line}")?;
-            }
-        }
-        if !ex.outline.is_empty() {
-            writeln!(out, "outline:")?;
-            // The levels of the headings enclosing the current one.
-            let mut open: Vec<u8> = Vec::new();
-            for heading in &ex.outline {
-                while open.last().is_some_and(|&l| l >= heading.level) {
-                    open.pop();
-                }
-                let line = heading
-                    .line
-                    .map_or_else(|| "L?".to_string(), |l| format!("L{l}"));
-                writeln!(
-                    out,
-                    "  {line:<6}{}{} {}  #{}",
-                    "  ".repeat(open.len()),
-                    "#".repeat(heading.level as usize),
-                    heading.text,
-                    heading.anchor
-                )?;
-                open.push(heading.level);
-            }
-        }
-        let mut seen = HashSet::new();
-        let mut references = String::new();
-        for raw in ex.wikilinks.iter().filter(|raw| seen.insert(raw.as_str())) {
-            let Some(target) = LinkTarget::parse(raw) else {
-                continue;
-            };
-            let to = match inner.index.resolve(&target).await? {
-                Resolution::Unique(page) => page.path,
-                Resolution::Ambiguous(pages) => format!("ambiguous ({} matches)", pages.len()),
-                Resolution::Missing => "no match".to_string(),
-            };
-            writeln!(references, "  [[{raw}]] → {to}")?;
-        }
-        if !references.is_empty() {
-            writeln!(out, "references:")?;
-            out.push_str(&references);
-        }
-        Ok(out)
     }
+}
+
+/// The overview of the document at `path` in `wiki`, with each path given
+/// as `prefix` and the path in `wiki`.
+async fn overview<P: Host>(wiki: &Wiki<P>, prefix: &str, path: &str) -> Result<String> {
+    let inner = &wiki.inner;
+    let (rel, source, doc) = load(wiki, prefix, path).await?;
+    let ex = doc.extract();
+    let name = rel.rsplit('/').next().unwrap_or(&rel);
+
+    let mut out = String::new();
+    writeln!(out, "path: {prefix}{rel}")?;
+    writeln!(
+        out,
+        "title: {}",
+        ex.title(name.strip_suffix(".md").unwrap_or(name))
+    )?;
+    writeln!(out, "lines: {}", source.lines().count())?;
+    let summary = ex.summary();
+    if !summary.is_empty() {
+        writeln!(out, "summary: {summary}")?;
+    }
+    if let Some(frontmatter) = doc.frontmatter.as_ref().filter(|f| !is_empty(f)) {
+        writeln!(out, "frontmatter:")?;
+        for line in serde_norway::to_string(frontmatter)?.lines() {
+            writeln!(out, "  {line}")?;
+        }
+    }
+    if !ex.outline.is_empty() {
+        writeln!(out, "outline:")?;
+        // The levels of the headings enclosing the current one.
+        let mut open: Vec<u8> = Vec::new();
+        for heading in &ex.outline {
+            while open.last().is_some_and(|&l| l >= heading.level) {
+                open.pop();
+            }
+            let line = heading
+                .line
+                .map_or_else(|| "L?".to_string(), |l| format!("L{l}"));
+            writeln!(
+                out,
+                "  {line:<6}{}{} {}  #{}",
+                "  ".repeat(open.len()),
+                "#".repeat(heading.level as usize),
+                heading.text,
+                heading.anchor
+            )?;
+            open.push(heading.level);
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut references = String::new();
+    for raw in ex.wikilinks.iter().filter(|raw| seen.insert(raw.as_str())) {
+        let Some(target) = LinkTarget::parse(raw) else {
+            continue;
+        };
+        let to = match inner.index.resolve(&target).await? {
+            Resolution::Unique(page) => format!("{prefix}{}", page.path),
+            Resolution::Ambiguous(pages) => format!("ambiguous ({} matches)", pages.len()),
+            Resolution::Missing => "no match".to_string(),
+        };
+        writeln!(references, "  [[{raw}]] → {to}")?;
+    }
+    if !references.is_empty() {
+        writeln!(out, "references:")?;
+        out.push_str(&references);
+    }
+    Ok(out)
+}
+
+/// A document's text, whole, a line range of it, or some of its sections;
+/// or a folder's index.
+pub struct ReadDocument<P: Host> {
+    wiki: Wiki<P>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ReadDocumentArgs {
+    /// The document's path, relative to the wiki root; `.md` is optional. A
+    /// folder's path (or `""` for the root) reads the folder's index.
+    pub path: String,
+    /// A line range: `12-40`, `L12-L40`, or to the end of the document,
+    /// `12-` or `L12-end`. Not with `sections`.
+    pub lines: Option<String>,
+    /// Sections to read, by the anchors `overview` lists: each is its heading
+    /// and everything up to the next heading of the same or a higher level.
+    /// Not with `lines`.
+    pub sections: Option<Vec<String>>,
+}
+
+impl<P: Host> ReadDocument<P> {
+    pub fn new(wiki: Wiki<P>) -> Self {
+        ReadDocument { wiki }
+    }
+}
+
+impl<P: Host> Tool for ReadDocument<P> {
+    type Args = ReadDocumentArgs;
+    const NAME: &'static str = "read_document";
+    const DESCRIPTION: &'static str = "Read a document: all of it, a line range (`lines`), or \
+some of its sections by anchor (`sections`), as `overview` lists them. A folder's path reads its \
+index: its subfolders, and its documents with their titles, tags and summaries.";
+
+    async fn call(&self, args: ReadDocumentArgs) -> Result<String> {
+        if args.lines.is_some() && args.sections.is_some() {
+            bail!("give lines or sections, not both");
+        }
+        match self.wiki.in_reference(&args.path) {
+            Some((reference, rest)) => read(reference, &reference_prefix(), rest, &args).await,
+            None => read(&self.wiki, "", &args.path, &args).await,
+        }
+    }
+}
+
+/// `read_document` on `path` in `wiki`, with each path given as `prefix`
+/// and the path in `wiki`.
+async fn read<P: Host>(
+    wiki: &Wiki<P>,
+    prefix: &str,
+    path: &str,
+    args: &ReadDocumentArgs,
+) -> Result<String> {
+    let trimmed = path.trim().trim_start_matches('/');
+    let folder = trimmed.trim_end_matches('/');
+    let is_folder = if trimmed.is_empty() || trimmed.ends_with('/') {
+        true
+    } else {
+        let doc = document_rel(trimmed);
+        let is_doc = match &doc {
+            Some(rel) => matches!(wiki.inner.root.kind(rel).await, Ok(FsKind::File)),
+            None => false,
+        };
+        !is_doc && matches!(wiki.inner.root.kind(folder).await, Ok(FsKind::Dir))
+    };
+    if is_folder {
+        if args.lines.is_some() || args.sections.is_some() {
+            bail!("a folder's index has no lines or sections");
+        }
+        return folder_index(wiki, prefix, folder).await;
+    }
+    let (rel, source, doc) = load(wiki, prefix, path).await?;
+    let lines: Vec<&str> = source.lines().collect();
+    if let Some(range) = &args.lines {
+        let (start, end) = parse_lines(range)?;
+        if start > lines.len() {
+            bail!("{prefix}{rel} has {} lines", lines.len());
+        }
+        let end = end.unwrap_or(lines.len()).min(lines.len());
+        return Ok(text_of(&lines[start - 1..end]));
+    }
+    if let Some(anchors) = &args.sections {
+        let outline = doc.extract().outline;
+        let mut out = Vec::new();
+        for anchor in anchors {
+            let anchor = anchor.trim().trim_start_matches('#');
+            let (start, end) = section_lines(&outline, anchor, lines.len())
+                .ok_or_else(|| anyhow::anyhow!("no section #{anchor} in {prefix}{rel}"))?;
+            out.push(text_of(&lines[start - 1..end]));
+        }
+        return Ok(out.join("\n"));
+    }
+    Ok(source)
+}
+
+/// `lines` joined, each ending in a newline.
+fn text_of(lines: &[&str]) -> String {
+    lines.iter().map(|line| format!("{line}\n")).collect()
+}
+
+/// A line range: `12-40`, `L12-L40`, `12-` or `L12-end`, as 1-based
+/// inclusive lines; the end is `None` to the end of the document.
+fn parse_lines(range: &str) -> Result<(usize, Option<usize>)> {
+    let bad = || anyhow::anyhow!("not a line range: {range} (e.g. 12-40, L12-L40, 12- or L12-end)");
+    let (start, end) = range.trim().split_once('-').ok_or_else(bad)?;
+    let number = |s: &str| {
+        let s = s.trim();
+        s.strip_prefix('L')
+            .unwrap_or(s)
+            .parse::<usize>()
+            .map_err(|_| bad())
+    };
+    let start = number(start)?;
+    let end = match end.trim() {
+        "" | "end" => None,
+        end => Some(number(end)?),
+    };
+    if start == 0 {
+        bail!("lines start at 1");
+    }
+    if end.is_some_and(|end| end < start) {
+        bail!("the range {range} ends before it starts");
+    }
+    Ok((start, end))
+}
+
+/// The lines of the section headed by `anchor`: from its heading's line to
+/// the line before the next heading of the same or a higher level, or the
+/// last line.
+fn section_lines(outline: &[OutlineHeading], anchor: &str, last: usize) -> Option<(usize, usize)> {
+    let at = outline.iter().position(|h| h.anchor == anchor)?;
+    let heading = &outline[at];
+    let start = heading.line?;
+    let end = outline[at + 1..]
+        .iter()
+        .find(|h| h.level <= heading.level)
+        .and_then(|h| h.line)
+        .map_or(last, |line| line - 1);
+    Some((start, end))
+}
+
+/// A folder's index, like the web view's: the reference's prompt at its
+/// root, the subfolders, then each document with its title, tags and
+/// summary, as `search` gives them.
+async fn folder_index<P: Host>(wiki: &Wiki<P>, prefix: &str, folder: &str) -> Result<String> {
+    if !folder.is_empty() && !matches!(wiki.inner.root.kind(folder).await, Ok(FsKind::Dir)) {
+        bail!("no folder at {prefix}{folder}");
+    }
+    let folder = Folder::new(wiki.clone(), folder.to_string());
+    let mut out = String::new();
+    let shown = if folder.path().is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}{}/", folder.path())
+    };
+    writeln!(
+        out,
+        "folder: {}",
+        if shown.is_empty() { "/" } else { &shown }
+    )?;
+    if let Some(prompt) = wiki.inner.prompt.filter(|_| folder.path().is_empty()) {
+        writeln!(out)?;
+        out.push_str(prompt.trim_end());
+        out.push('\n');
+    }
+    let folders = folder.folders().await?;
+    if !folders.is_empty() {
+        writeln!(out, "\nfolders:")?;
+        for sub in &folders {
+            writeln!(out, "  {prefix}{}/", sub.path())?;
+        }
+    }
+    let documents = folder.documents().await?;
+    if !documents.is_empty() {
+        writeln!(out, "\ndocuments:")?;
+        for doc in &documents {
+            write!(out, "  {prefix}{} — {}", doc.path(), doc.title())?;
+            for tag in doc.tags() {
+                write!(out, "  #{tag}")?;
+            }
+            out.push('\n');
+            let summary = doc.summary();
+            if !summary.is_empty() {
+                writeln!(out, "    {summary}")?;
+            }
+        }
+    }
+    if folders.is_empty() && documents.is_empty() {
+        writeln!(out, "\nNo documents.")?;
+    }
+    Ok(out)
 }
 
 /// The documents open in the web view, most recently active first: the
@@ -412,48 +646,68 @@ the user a link. Optionally to a line (a line link, which highlights the block h
 to a heading (by its text or anchor), not both.";
 
     async fn call(&self, args: PageUrlArgs) -> Result<String> {
-        let inner = &self.wiki.inner;
-        let (rel, doc) = load(inner, &args.path).await?;
-        let fragment = match (args.line, args.heading.as_deref()) {
-            (Some(_), Some(_)) => bail!("give a line or a heading, not both"),
-            (Some(0), None) => bail!("lines start at 1"),
-            (Some(line), None) => format!("#:{line}"),
-            (None, Some(heading)) => {
-                let want = heading.trim().trim_start_matches('#').trim().to_lowercase();
-                let ex = doc.extract();
-                let Some(found) = ex
-                    .outline
-                    .iter()
-                    .find(|h| h.text.to_lowercase() == want || h.anchor == want)
-                else {
-                    bail!("no heading \"{heading}\" in {rel}");
-                };
-                format!("#{}", found.anchor)
-            }
-            (None, None) => String::new(),
-        };
-        let origin = request_origin().unwrap_or_default();
-        Ok(format!(
-            "{origin}{}{}{fragment}",
-            inner.base,
-            path_to_url(&rel)
-        ))
+        match self.wiki.in_reference(&args.path) {
+            Some((reference, rest)) => page_url(reference, &reference_prefix(), rest, &args).await,
+            None => page_url(&self.wiki, "", &args.path, &args).await,
+        }
     }
 }
 
-/// The document at `path` (relative to the wiki root, `.md` optional),
-/// parsed: its rel and its tree. Fails for a path that isn't a document
-/// file reached without symlinks.
-async fn load<P: Host>(inner: &Inner<P>, path: &str) -> Result<(String, DocumentTree<P>)> {
-    let Some(rel) = document_rel(path) else {
-        bail!("not a document path: {path}");
+/// The URL of the document at `path` in `wiki`, to the line or heading in
+/// `args`; errors give paths as `prefix` and the path in `wiki`.
+async fn page_url<P: Host>(
+    wiki: &Wiki<P>,
+    prefix: &str,
+    path: &str,
+    args: &PageUrlArgs,
+) -> Result<String> {
+    let inner = &wiki.inner;
+    let (rel, _, doc) = load(wiki, prefix, path).await?;
+    let fragment = match (args.line, args.heading.as_deref()) {
+        (Some(_), Some(_)) => bail!("give a line or a heading, not both"),
+        (Some(0), None) => bail!("lines start at 1"),
+        (Some(line), None) => format!("#:{line}"),
+        (None, Some(heading)) => {
+            let want = heading.trim().trim_start_matches('#').trim().to_lowercase();
+            let ex = doc.extract();
+            let Some(found) = ex
+                .outline
+                .iter()
+                .find(|h| h.text.to_lowercase() == want || h.anchor == want)
+            else {
+                bail!("no heading \"{heading}\" in {prefix}{rel}");
+            };
+            format!("#{}", found.anchor)
+        }
+        (None, None) => String::new(),
     };
-    if !matches!(fs_kind(&inner.root, &rel).await, Ok(FsKind::File)) {
-        bail!("no document at {rel}");
+    let origin = request_origin().unwrap_or_default();
+    Ok(format!(
+        "{origin}{}{}{fragment}",
+        inner.base,
+        path_to_url(&rel)
+    ))
+}
+
+/// The document at `path` (relative to the wiki root, `.md` optional): its
+/// rel, its text and its parsed tree. Fails for a path that isn't a
+/// document file reached without symlinks; errors give paths as `prefix`
+/// and the path in `wiki`.
+async fn load<P: Host>(
+    wiki: &Wiki<P>,
+    prefix: &str,
+    path: &str,
+) -> Result<(String, String, DocumentTree<P>)> {
+    let Some(rel) = document_rel(path) else {
+        bail!("not a document path: {prefix}{path}");
+    };
+    let inner = &wiki.inner;
+    if !matches!(inner.root.kind(&rel).await, Ok(FsKind::File)) {
+        bail!("no document at {prefix}{rel}");
     }
-    let source = tokio::fs::read_to_string(inner.root.join(&rel)).await?;
+    let source = inner.root.read(&rel).await?;
     let doc = parse(&*inner.host, &source);
-    Ok((rel, doc))
+    Ok((rel, source, doc))
 }
 
 /// The rel of the document at `path` (relative to the wiki root, `.md`
