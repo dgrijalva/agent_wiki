@@ -437,6 +437,25 @@ async fn a_host_signals_its_own_page_by_url() {
 }
 
 #[tokio::test]
+async fn sse_announces_changes_to_the_index_pages_above() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "p/q/a.md", "# A\n");
+    write(dir.path(), "z/b.md", "# B\n");
+    let app = open(&dir).await;
+    let mut root = subscribe(&app, "/_wiki/events?url=%2F").await;
+    let mut p = subscribe(&app, "/_wiki/events?url=%2Fp%2F").await;
+    let mut q = subscribe(&app, "/_wiki/events?url=%2Fp%2Fq%2F").await;
+    let mut z = subscribe(&app, "/_wiki/events?url=%2Fz%2F").await;
+
+    write(dir.path(), "p/q/a.md", "# A changed\n");
+    assert!(next_changed(&mut q).await.contains("data: /p/q/"));
+    assert!(next_changed(&mut p).await.contains("data: /p/"));
+    assert!(next_changed(&mut root).await.contains("data: /"));
+    let quiet = tokio::time::timeout(Duration::from_millis(500), next_changed(&mut z)).await;
+    assert!(quiet.is_err(), "a folder beside the change was signalled");
+}
+
+#[tokio::test]
 async fn documents_and_folders_can_be_watched() {
     let dir = TempDir::new().unwrap();
     write(dir.path(), "p/a.md", "# A\n");

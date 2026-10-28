@@ -553,13 +553,21 @@ async fn page_views_are_wired_for_live_updates() {
         "sse-connect=\"/_wiki/events?url=%2FProjects%2FBeta%2FDeep%2FNested%2520Note&amp;tab="
     ));
 
-    for uri in ["/", "/_wiki/search?q=x"] {
+    // Folder index pages are live, but not counted as open documents.
+    for (uri, url) in [("/", "%2F"), ("/Projects/Beta/", "%2FProjects%2FBeta%2F")] {
         let body = ok_body(&app, uri).await;
-        assert!(body.contains("htmx.org@2.0.11/dist/htmx.min.js"), "{uri}");
-        assert!(body.contains("id=\"htmx-root\""), "{uri}");
-        assert!(!body.contains("sse-connect"), "{uri}");
-        assert!(!body.contains("hx-trigger"), "{uri}");
+        assert!(
+            body.contains(&format!("sse-connect=\"/_wiki/events?url={url}\"")),
+            "{uri}"
+        );
+        assert!(body.contains(&format!("hx-get=\"{uri}\"")), "{uri}");
     }
+
+    let body = ok_body(&app, "/_wiki/search?q=x").await;
+    assert!(body.contains("htmx.org@2.0.11/dist/htmx.min.js"));
+    assert!(body.contains("id=\"htmx-root\""));
+    assert!(!body.contains("sse-connect"));
+    assert!(!body.contains("hx-trigger"));
 }
 
 #[tokio::test]

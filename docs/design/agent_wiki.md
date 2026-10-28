@@ -452,6 +452,8 @@ An open page updates when its file changes on disk.
 - **The stream tells the server its page's URL.**
   [PROVISIONAL: the stream is `{base}/_wiki/events?url={page url path}&tab={id}`. A host signals with `Wiki::signal(path)`.]
 - **Document pages use the same mechanism:** the watcher signals the URL of each page it reindexes. (Dave, 2026-10-21: "same mechanism: great")
+- **Folder index pages update too, when anything below them changes.** (Dave, 2026-10-28) The recently edited list "is the most valuable thing to update and needs to be recursive"; the file list is "also valuable to update, but doesn't need to be recursive"; the tags "could update, but I don't really care." The whole index body refetches, like a document page: "how expensive is it really to just refresh… it should be inexpensive for us to do it and not worry too much about."
+  [PROVISIONAL: the watcher signals the index page URL of every folder above each changed document, the root included, once per batch.]
 - [PROVISIONAL: a page's channel is a `tokio::sync::watch`, so signals that arrive before the page refetches collapse into one refetch.]
 
 - **Standalone binary shutdown:** the first interrupt starts a graceful shutdown and prints that it is waiting for connections to close; a second interrupt kills it. (Dave, 2026-10-20) An open page's live-update stream doesn't end on its own, so with a page open the first interrupt waits until the second.

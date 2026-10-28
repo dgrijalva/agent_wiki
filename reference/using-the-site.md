@@ -37,7 +37,7 @@ The search box at the top of every page searches titles, tags and body text, and
 
 ## Live updates
 
-An open page updates in place when its file changes on disk, so the user can watch a document while you edit it. An application can also make its own pages refresh.
+An open page updates in place when its file changes on disk, so the user can watch a document while you edit it. An open folder index page updates when any document in that folder, or in a folder below it, changes. An application can also make its own pages refresh.
 
 ## What the agent can see
 

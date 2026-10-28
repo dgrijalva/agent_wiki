@@ -11,7 +11,7 @@ use tokio::sync::watch;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::WatchStream;
 
-use crate::names::path_to_url;
+use crate::names::{folder_url, path_to_url};
 
 /// How a watched document last changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,8 +60,9 @@ impl Signals {
     }
 
     /// One watcher batch's changes, by rel: tells each document's watch,
-    /// each folder watch above it (the root included) once, and each open
-    /// page of the document. Watches nobody holds any more are dropped.
+    /// each folder watch above it (the root included) once, each open page
+    /// of the document, and each open index page of a folder above it once.
+    /// Watches nobody holds any more are dropped.
     pub(crate) fn changed(&self, changes: &[(String, DocumentChange)]) {
         {
             let mut documents = self.documents.lock().unwrap();
@@ -72,21 +73,23 @@ impl Signals {
                 }
             }
         }
+        let mut touched: Vec<&str> = changes.iter().flat_map(|(rel, _)| ancestors(rel)).collect();
+        touched.sort_unstable();
+        touched.dedup();
         {
             let mut folders = self.folders.lock().unwrap();
             folders.retain(|_, sender| sender.receiver_count() > 0);
-            let mut touched: Vec<&str> =
-                changes.iter().flat_map(|(rel, _)| ancestors(rel)).collect();
-            touched.sort_unstable();
-            touched.dedup();
-            for folder in touched {
-                if let Some(sender) = folders.get(folder) {
+            for folder in &touched {
+                if let Some(sender) = folders.get(*folder) {
                     sender.send_modify(|n| *n += 1);
                 }
             }
         }
         for (rel, _) in changes {
             self.signal(&format!("{}{}", self.base, path_to_url(rel)));
+        }
+        for folder in touched {
+            self.signal(&format!("{}{}", self.base, folder_url(folder)));
         }
     }
 
@@ -180,6 +183,9 @@ mod tests {
         let other = signals.watch_folder("z");
         let mut page = signals.open_page("/docs/a/b");
         let mut second = signals.open_page("/docs/a/b");
+        let mut index = signals.open_page("/docs/a/");
+        let mut root_index = signals.open_page("/docs/");
+        let mut other_index = signals.open_page("/docs/z/");
 
         signals.changed(&[
             ("a/b.md".to_string(), DocumentChange::Modified),
@@ -193,6 +199,14 @@ mod tests {
         assert!(!other.has_changed().unwrap());
         assert_eq!(page.next().await, Some(()));
         assert_eq!(second.next().await, Some(()));
+        // So do the index pages of every folder above them.
+        assert_eq!(index.next().await, Some(()));
+        assert_eq!(root_index.next().await, Some(()));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), other_index.next())
+                .await
+                .is_err()
+        );
 
         // A host's signal reaches every open instance; signals not yet
         // taken collapse into one.
@@ -203,6 +217,7 @@ mod tests {
         signals.signal("/docs/a/b");
         assert_eq!(second.next().await, Some(()));
         drop(second);
+        drop((index, root_index, other_index));
         assert!(signals.pages.lock().unwrap().is_empty());
     }
 }

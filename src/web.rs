@@ -17,7 +17,7 @@ use crate::components::{DisambiguationBody, FolderIndexBody, NotFoundBody, Searc
 use crate::data::{Document, Folder};
 use crate::index::FsKind;
 use crate::links::local_href;
-use crate::names::{encode_component, image_type_of, url_to_path, url_to_rel};
+use crate::names::{encode_component, folder_url, image_type_of, url_to_path, url_to_rel};
 use crate::parse::Host;
 use crate::root::Root;
 use crate::tabs::PushedState;
@@ -583,7 +583,7 @@ async fn folder_page<P: Host>(wiki: &Wiki<P>, request: &Parts, folder: &str) -> 
         },
         title: body.title().to_string(),
         crumbs: (!folder.is_empty()).then_some(parent),
-        live: None,
+        live: Some(format!("{}{}", wiki.inner.base, folder_url(folder))),
     };
     let content = |ctx: &BodyCtx<'_, P>| {
         html! {
