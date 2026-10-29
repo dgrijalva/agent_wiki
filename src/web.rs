@@ -161,10 +161,20 @@ details.toc li { margin: 0.2rem 0; }
 .task-list-item { list-style-type: none; }
 .task-list-item-checkbox { margin: 0 0.2em 0.25em -1.4em; vertical-align: middle; }
 .task-list-item[data-task=\"-\"] { color: var(--muted); text-decoration: line-through; }
-:is(.task-list-item[data-task=\"-\"], .task-list-item[data-task=\"-\"] > p)
-  > .task-list-item-checkbox { appearance: none; box-sizing: border-box; width: 13px;
-  height: 13px; margin-right: 0; color: inherit; border: 1px solid; border-radius: 2px;
-  background: linear-gradient(currentColor, currentColor) center / 100% 1px no-repeat; }
+.task-list-item[data-task=\"-\"] .task-list-item-checkbox { appearance: none; width: 13px;
+  height: 13px; margin-right: 0; background: currentColor;
+  --box: url(\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'>\
+<rect x='.5' y='.5' width='12' height='12' rx='1.5' fill='none' stroke='black'/>\
+<path d='M0 6.5h13' stroke='black'/></svg>\");
+  -webkit-mask: var(--box); mask: var(--box); }
+.task-list-item[data-task=\"-\"] .task-list-item-checkbox:checked {
+  --mark: url(\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'>\
+<path d='M3 6.5l2.5 2.5 4.5-5' fill='none' stroke='black' stroke-width='1.5'/></svg>\");
+  -webkit-mask: var(--box), var(--mark); mask: var(--box), var(--mark); }
+.task-list-item[data-task=\"-\"] .task-list-item-checkbox:indeterminate {
+  --mark: url(\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'>\
+<path d='M3 3h7v2H3zM3 8h7v2H3z'/></svg>\");
+  -webkit-mask: var(--box), var(--mark); mask: var(--box), var(--mark); }
 .line-target { background: var(--line-target); }
 .crumbs-row { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
 button.copy-path { flex: none; font: inherit; font-size: 0.8rem; color: var(--muted);
