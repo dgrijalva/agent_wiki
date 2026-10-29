@@ -288,6 +288,24 @@ A single newline renders as a line break.
 
 Raw HTML in markdown passes through. (Dave, 2026-10-19)
 
+#### Scripts in content
+
+A page's content can hold scripts: `<script>` elements, event-handler attributes, and `javascript:` URLs, from raw HTML or from markdown links. Content that came from elsewhere (a clipped web page, pasted HTML, a cloned repository's docs) runs them with the wiki's origin, where they can read every other page.
+
+- [PROVISIONAL: a host sets a script filter through the builder, `.script_filter(|script| …)`, that allows or denies each script in a page's body. Without one, every script runs as written, as raw HTML passes through above. Frederic's request (2026-10-28).]
+- [PROVISIONAL: the filter is given the page (`script.page()`, a `PageKind`, and `script.url()`, its URL path) and the script (`script.kind()`): `Inline(code)`, `External(src)` as written, `Handler { attribute, code }`, or `Url(javascript_url)`. Attribute values arrive with character references decoded.]
+- [PROVISIONAL: the recommended setup blocks every script in content, `.script_filter(|_| false)`, and `reference/building-an-application.md` says so. Model: GitHub, which runs no script from a document's HTML.]
+- [PROVISIONAL: under a filter, each page carries a Content-Security-Policy, and the policy is the enforcement. It is a `<meta http-equiv>` first in `<head>`, so a custom page a host serves itself carries it too.]
+- [PROVISIONAL: the policy's `script-src` names each allowed script: code in the page by its `sha256` hash, a file by its URL without query or fragment. It never has `'unsafe-inline'`, `'unsafe-eval'` or `'strict-dynamic'`.]
+- [PROVISIONAL: hashes and URLs rather than nonces, so an allowed script that htmx re-inserts after a live-update swap still matches the page's policy.]
+- [PROVISIONAL: the library's own scripts and everything in the template's `head` are allowed without asking the filter. Scripts in the template's `body` go through the filter with the content, since the two share the htmx root.]
+- [PROVISIONAL: a script the filter denies is also removed from the page: a `<script>` element becomes `<!-- script blocked -->`, a handler or `javascript:` attribute is dropped. Markup that can't be read unambiguously (e.g. a `<script>` inside `<select>`) is left as written, and none of its scripts are allowed.]
+- [PROVISIONAL: an allowed handler or `javascript:` URL is allowed by hash with `'unsafe-hashes'`. A relative `src` is allowed as `'self'`. A `src` the policy can't name narrowly (another scheme such as `data:`, credentials, a host that isn't plain ASCII, a path that is empty or ends in `/`) stays blocked even when the filter allows it.]
+- [PROVISIONAL: nothing evaluated from a string runs under a filter, so htmx's `hx-on` and its other eval-based features are blocked in content. The library's own htmx use needs none.]
+- [PROVISIONAL: every `<script>` element counts, data blocks such as `type="application/ld+json"` included.]
+- [PROVISIONAL: the policy also has `object-src 'none'`. Under a filter, an image response carries `script-src 'none'; object-src 'none'`, since an SVG opened on its own or framed by a page would otherwise run its scripts with the wiki's origin.]
+- [PROVISIONAL: the reference at `{base}/_wiki/reference` uses the wiki's filter.]
+
 ### Code highlighting and mermaid — in the browser
 
 > **Dave (2026-10-19):** "In the browser. We can import those tools without even embedding them in the project, right?"
