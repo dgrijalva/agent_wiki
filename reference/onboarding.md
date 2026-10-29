@@ -25,10 +25,12 @@ cargo install --git https://github.com/dgrijalva/agent_wiki agent_wiki
 The wiki serves one folder of markdown, subfolders included; hidden entries are skipped and symlinks aren't followed. If the folder is a git repository, edit dates come from its history.
 
 ```sh
-agent_wiki <folder> [--port N] [--index <path>] [--reindex]
+agent_wiki <folder> [--port N] [--index <path>] [--reindex] [--allow-scripts]
 ```
 
 It serves on `127.0.0.1`, port 3000 by default. The index is in memory and rebuilt at every start unless `--index <path>` keeps it in a database file; `--reindex` rebuilds that file at startup. Let the user choose.
+
+Scripts in notes don't run: `<script>` elements, event handlers and `javascript:` links are removed from the page. `--allow-scripts` runs them as written, where a script from a clipped web page or a cloned repository's docs can read every other page; suggest it only when the user writes scripts into their own notes.
 
 ## 5. Connect the MCP
 

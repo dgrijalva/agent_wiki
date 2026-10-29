@@ -295,6 +295,7 @@ A page's content can hold scripts: `<script>` elements, event-handler attributes
 - [PROVISIONAL: a host passes the builder a filter, `.scripts(|script| …)`, that receives each script in a page's body and returns whether it may run. Every script runs as written unless it is set, as raw HTML passes through above.]
 - [PROVISIONAL: the filter is given the page (`script.page()`, a `PageKind`, and `script.url()`, its URL path) and the script (`script.kind()`): `Inline(code)`, `External(src)` as written, `Handler { attribute, code }`, or `Url(javascript_url)`. Attribute values arrive with character references decoded.]
 - [PROVISIONAL: the recommended setup blocks every script in content, `.scripts(|_| false)`, and `reference/building-an-application.md` says so. Model: GitHub, which runs no script from a document's HTML.]
+- [PROVISIONAL: the binary uses the recommended setup. `--allow-scripts` leaves the filter unset, so every script runs as written.]
 - [PROVISIONAL: under a filter, each page carries a Content-Security-Policy, and the policy is the enforcement. It is a `<meta http-equiv>` first in `<head>`, so a custom page a host serves itself carries it too.]
 - [PROVISIONAL: the policy's `script-src` names each allowed script: code in the page by its `sha256` hash, a file by its URL without query or fragment. It never has `'unsafe-inline'`, `'unsafe-eval'` or `'strict-dynamic'`.]
 - [PROVISIONAL: hashes and URLs rather than nonces, so an allowed script that htmx re-inserts after a live-update swap still matches the page's policy.]

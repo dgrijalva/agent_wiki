@@ -19,7 +19,7 @@ Early prototype. The API will change.
 - **Links:** headings are linkable, `[[Page#Heading]]` jumps to the heading, `#:N` links to line N of the page's source, and `{base}/foo/bar.md` reaches the page at `{base}/foo/bar`.
 - **Images** and ordinary links resolve relative to the page, or from the root with a leading `/`, and never leave the root folder.
 - **Styling:** a built-in stylesheet with dark mode. A host stylesheet can be layered on top or replace it.
-- **Scripts in notes** run as written by default. A host's script filter decides which run; blocking them all is the recommended setup. See [Embedding in an axum app](#embedding-in-an-axum-app).
+- **Scripts in notes** don't run in the binary unless it is started with `--allow-scripts`. In the library they run as written by default; a host's script filter decides which run, and blocking them all is the recommended setup. See [Embedding in an axum app](#embedding-in-an-axum-app).
 - **Startup is immediate.** The folder is indexed in the background while pages are served.
 - **MCP server** for agents: search, document overviews, reading documents by line range or section, links into the web view, and what the user has open and selected. See [MCP](#mcp).
 - **A reference for agents**, built in and served at `{base}/_wiki/reference`: using the MCP, onboarding, and building your own application. Its source is [`reference/`](reference/).
@@ -31,12 +31,14 @@ Requirements: a Rust toolchain with `cargo`, and `git`.
 
 ```sh
 cargo install --git https://github.com/dgrijalva/agent_wiki agent_wiki
-agent_wiki <folder> [--port N] [--index <path>] [--reindex]
+agent_wiki <folder> [--port N] [--index <path>] [--reindex] [--allow-scripts]
 ```
 
 Or from a checkout, `cargo run -- <folder>`.
 
 Serves on `127.0.0.1`, port 3000 by default. Ctrl-C starts a graceful shutdown; a second Ctrl-C quits.
+
+Scripts in notes (`<script>` elements, event handlers and `javascript:` links) are blocked: each page carries a Content-Security-Policy and the scripts are removed. `--allow-scripts` runs them as written, with the site's origin.
 
 ### Index
 
