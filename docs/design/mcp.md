@@ -58,7 +58,7 @@ agent_wiki serves an MCP server so agents can work with the wiki. (Dave, 2026-10
 - **No MCP sessions until something needs them.** (Dave, 2026-10-20) MCP protocol `2026-07-28` removes sessions, and rmcp serves that version without them.
 - [PROVISIONAL: a call is answered with plain JSON rather than an SSE stream when the tool sends nothing before its result (rmcp's `json_response`).]
 - [PROVISIONAL: rmcp's default host check is kept: only requests addressed to `localhost`, `127.0.0.1` or `::1` are accepted, against DNS rebinding.]
-- [PROVISIONAL: a host that sets the builder's `.allowed_hosts` replaces it: the wiki's own check covers the endpoint with that list, and rmcp's is turned off.] See Host check against DNS rebinding in `agent_wiki.md`.
+- [PROVISIONAL: a host that sets the builder's `.allowed_hosts` replaces it: the wiki's own check covers the endpoint, and rmcp's is turned off.] See Host check against DNS rebinding in `agent_wiki.md`.
 - [PROVISIONAL: the binary prints the MCP URL next to the site URL at startup.]
 
 ## Results

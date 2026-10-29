@@ -80,7 +80,7 @@ let app = app.merge(wiki.router());
 
 Every generated URL carries the base path. The wiki's own routes live under `{base}/_wiki/`, including the MCP endpoint.
 
-`.allowed_hosts` refuses, with `403`, a request to any of the wiki's routes whose `Host` isn't listed (`AllowedHosts::loopback()`, `AllowedHosts::new(["wiki.example.com"])`, or `AllowedHosts::any()` for no check), and sets the MCP endpoint's list to match. Without it, only the MCP endpoint checks, for loopback hosts. The binary uses `AllowedHosts::loopback()`.
+`.allowed_hosts` refuses, with `403`, a request to any of the wiki's routes whose `Host` isn't listed (`AllowedHosts::loopback()`, `AllowedHosts::new(["wiki.example.com"])`, `AllowedHosts::from_fn(|host| …)` for a rule of the application's own, or `AllowedHosts::any()` for no check), and checks the MCP endpoint the same way. Without it, only the MCP endpoint checks, for loopback hosts. The binary uses `AllowedHosts::loopback()`.
 
 Raw HTML in a note passes through, so without a script filter a note's `<script>`, event handlers and `javascript:` links run with the site's origin. With one, every page carries a Content-Security-Policy that allows the library's own scripts, the template's `head` scripts, and the scripts the filter allows (by hash or URL); the rest are removed from the page and blocked. The filter gets each script's page and kind (`Inline`, `External`, `Handler`, `Url`), so it can allow, say, files from one domain or inline scripts on some pages.
 

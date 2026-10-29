@@ -800,6 +800,34 @@ async fn allowed_hosts_set_the_mcp_endpoints_list_too() {
 }
 
 #[tokio::test]
+async fn allowed_hosts_from_a_callback_cover_the_mcp_endpoint_too() {
+    let app = app_with_hosts(AllowedHosts::from_fn(|host| {
+        host.ends_with(".tailnet.example")
+    }))
+    .await;
+    for uri in CHECKED {
+        assert_eq!(
+            status_for_host(&app, uri, Some("wiki.tailnet.example:3000")).await,
+            StatusCode::OK,
+            "{uri}"
+        );
+        assert_eq!(
+            status_for_host(&app, uri, Some("127.0.0.1")).await,
+            StatusCode::FORBIDDEN,
+            "{uri}"
+        );
+    }
+    let app = app_with_hosts(AllowedHosts::from_fn(|_| panic!("called without a host"))).await;
+    for uri in CHECKED {
+        assert_eq!(
+            status_for_host(&app, uri, None).await,
+            StatusCode::FORBIDDEN,
+            "{uri}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn without_allowed_hosts_only_the_mcp_endpoint_checks() {
     let app = root_app().await;
     for uri in &CHECKED[..CHECKED.len() - 1] {
