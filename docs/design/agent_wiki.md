@@ -292,7 +292,7 @@ Raw HTML in markdown passes through. (Dave, 2026-10-19)
 
 A `[ ]` at the start of a list item makes it a task (see First host integration → The task widget).
 
-- [PROVISIONAL: statuses follow the Obsidian Tasks plugin, which Frederic's vault uses: `[ ]` open, `[x]` or `[X]` done, `[/]` in progress, `[-]` canceled. Requested by Frederic, 2026-10-28.]
+- [PROVISIONAL: statuses follow the Obsidian Tasks plugin: `[ ]` open, `[x]` or `[X]` done, `[/]` in progress, `[-]` canceled.]
 - [PROVISIONAL: any other single character, except whitespace and `[` or `]`, also makes a task, drawn as open; the Tasks plugin treats an unknown status as a to-do. The character is kept.]
 - [PROVISIONAL: a list item's task is a status enum, `ListItem { task: Option<TaskStatus> }`, with `Other(char)` for the rest, so an unknown status can't be drawn as done.]
 - [PROVISIONAL: the markup is GitHub's: `contains-task-list` on a list holding a task, `task-list-item` on the item, and a disabled `task-list-item-checkbox` inside the item's first paragraph, checked when done, with GitHub's styles for those classes. The item also carries Obsidian's `data-task` attribute, the bracketed character, for host styles.]
