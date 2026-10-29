@@ -5,7 +5,7 @@ use axum::Json;
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::request::Parts;
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -20,6 +20,7 @@ use crate::links::local_href;
 use crate::names::{encode_component, folder_url, image_type_of, url_to_path, url_to_rel};
 use crate::parse::Host;
 use crate::root::Root;
+use crate::scripts::{NO_SCRIPTS, Policy, Script};
 use crate::tabs::PushedState;
 use crate::template::{BodyCtx, DocumentMeta, HeadCtx, PageKind, Template};
 
@@ -30,6 +31,8 @@ const HLJS_DARK_CSS: &str =
 const HLJS_JS: &str =
     "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/highlight.min.js";
 const MERMAID_JS: &str = "https://cdn.jsdelivr.net/npm/mermaid@12/dist/mermaid.esm.min.mjs";
+/// Where `MERMAID_JS` imports its chunks from.
+const MERMAID_DIST: &str = "https://cdn.jsdelivr.net/npm/mermaid@12/dist/";
 const HTMX_JS: &str = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/dist/htmx.min.js";
 const HTMX_SSE_JS: &str = "https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4/dist/sse.min.js";
 
@@ -287,7 +290,7 @@ async fn draw_page<P: Host>(
     let mut head = HeadCtx::new(&page.kind, request, base, page.title);
     let host_head = template.head(&mut head).await;
     let body = BodyCtx::new(wiki, &page.kind, request, page.crumbs);
-    let root = template.body(&body, content).await;
+    let mut root = template.body(&body, content).await;
     let live = page.live.as_deref();
     // Only a document page counts as open, for the `open_files` tool.
     let document = matches!(page.kind, PageKind::Document(_));
@@ -317,11 +320,44 @@ document.addEventListener('htmx:afterSwap', (e) => {{
 }});
 "
     );
+    let head_scripts = html! {
+        script src=(HTMX_JS) {}
+        script src=(HTMX_SSE_JS) {}
+    };
+    let tail_scripts = html! {
+        script src=(HLJS_JS) {}
+        script { "hljs.highlightAll();" }
+        script type="module" { (PreEscaped(mermaid)) }
+        script { (PreEscaped(LINE_JS)) }
+        script { (PreEscaped(COPY_JS)) }
+        @if tab.is_some() {
+            script { (PreEscaped(STATE_JS)) }
+        }
+    };
+    let csp = wiki.inner.scripts.as_ref().map(|filter| {
+        let mut policy = Policy::default();
+        for trusted in [&head_scripts, &host_head, &tail_scripts] {
+            policy.trust(&trusted.0);
+        }
+        policy.allow_source(MERMAID_DIST);
+        let url = request.uri.path();
+        root = PreEscaped(policy.filter(&root.0, |kind| {
+            filter(&Script {
+                page: &page.kind,
+                url,
+                kind,
+            })
+        }));
+        policy.csp()
+    });
     html! {
         (DOCTYPE)
         html {
             head {
                 meta charset="utf-8";
+                @if let Some(csp) = &csp {
+                    meta http-equiv="Content-Security-Policy" content=(csp);
+                }
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (head.title()) }
                 link rel="stylesheet" href=(HLJS_CSS) media="(prefers-color-scheme: light)";
@@ -332,8 +368,7 @@ document.addEventListener('htmx:afterSwap', (e) => {{
                 @if let Some(css) = &wiki.inner.stylesheet {
                     style { (PreEscaped(css)) }
                 }
-                script src=(HTMX_JS) {}
-                script src=(HTMX_SSE_JS) {}
+                (head_scripts)
                 (host_head)
             }
             body hx-ext=[sse] sse-connect=[events] data-tab=[tab.as_deref()] data-base=(base) {
@@ -341,14 +376,7 @@ document.addEventListener('htmx:afterSwap', (e) => {{
                     hx-swap=[swap] hx-disinherit=[disinherit] {
                     (root)
                 }
-                script src=(HLJS_JS) {}
-                script { "hljs.highlightAll();" }
-                script type="module" { (PreEscaped(mermaid)) }
-                script { (PreEscaped(LINE_JS)) }
-                script { (PreEscaped(COPY_JS)) }
-                @if tab.is_some() {
-                    script { (PreEscaped(STATE_JS)) }
-                }
+                (tail_scripts)
             }
         }
     }
@@ -460,7 +488,18 @@ async fn image<P: Host>(
         return not_found(wiki, request).await;
     }
     match tokio::fs::read(root.join(rel)).await {
-        Ok(bytes) => ([(header::CONTENT_TYPE, content_type)], bytes).into_response(),
+        Ok(bytes) => {
+            let mut response = ([(header::CONTENT_TYPE, content_type)], bytes).into_response();
+            // An SVG opened on its own, or framed by a page, would otherwise
+            // run its scripts with the wiki's origin.
+            if wiki.inner.scripts.is_some() {
+                response.headers_mut().insert(
+                    header::CONTENT_SECURITY_POLICY,
+                    HeaderValue::from_static(NO_SCRIPTS),
+                );
+            }
+            response
+        }
         Err(_) => not_found(wiki, request).await,
     }
 }

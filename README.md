@@ -19,6 +19,7 @@ Early prototype. The API will change.
 - **Links:** headings are linkable, `[[Page#Heading]]` jumps to the heading, `#:N` links to line N of the page's source, and `{base}/foo/bar.md` reaches the page at `{base}/foo/bar`.
 - **Images** and ordinary links resolve relative to the page, or from the root with a leading `/`, and never leave the root folder.
 - **Styling:** a built-in stylesheet with dark mode. A host stylesheet can be layered on top or replace it.
+- **Scripts in notes** don't run in the binary unless it is started with `--allow-scripts`. In the library they run as written by default; a host's script filter decides which run, and blocking them all is the recommended setup. See [Embedding in an axum app](#embedding-in-an-axum-app).
 - **Startup is immediate.** The folder is indexed in the background while pages are served.
 - **MCP server** for agents: search, document overviews, reading documents by line range or section, links into the web view, and what the user has open and selected. See [MCP](#mcp).
 - **A reference for agents**, built in and served at `{base}/_wiki/reference`: using the MCP, onboarding, and building your own application. Its source is [`reference/`](reference/).
@@ -30,12 +31,14 @@ Requirements: a Rust toolchain with `cargo`, and `git`.
 
 ```sh
 cargo install --git https://github.com/dgrijalva/agent_wiki agent_wiki
-agent_wiki <folder> [--port N] [--index <path>] [--reindex]
+agent_wiki <folder> [--port N] [--index <path>] [--reindex] [--allow-scripts]
 ```
 
 Or from a checkout, `cargo run -- <folder>`.
 
 Serves on `127.0.0.1`, port 3000 by default. Ctrl-C starts a graceful shutdown; a second Ctrl-C quits.
+
+Scripts in notes (`<script>` elements, event handlers and `javascript:` links) are blocked: each page carries a Content-Security-Policy and the scripts are removed. `--allow-scripts` runs them as written, with the site's origin.
 
 ### Index
 
@@ -69,6 +72,7 @@ Local use only, for now: `open_files` reports every browser's open pages, and re
 let wiki = agent_wiki::Wiki::builder(root)
     .base_path("/docs")   // optional; default "/"
     .stylesheet(host_css) // optional; CSS layered on top of the built-in stylesheet
+    .scripts(|_| false)   // recommended; no script in a note runs (default: all run)
     .index_storage(agent_wiki::IndexStorage::FilePath(index_file)) // optional; default InMemory
     .build()
     .await?;
@@ -76,6 +80,8 @@ let app = app.merge(wiki.router());
 ```
 
 Every generated URL carries the base path. The wiki's own routes live under `{base}/_wiki/`, including the MCP endpoint.
+
+Raw HTML in a note passes through, so without a script filter a note's `<script>`, event handlers and `javascript:` links run with the site's origin. With one, every page carries a Content-Security-Policy that allows the library's own scripts, the template's `head` scripts, and the scripts the filter allows (by hash or URL); the rest are removed from the page and blocked. The filter gets each script's page and kind (`Inline`, `External`, `Handler`, `Url`), so it can allow, say, files from one domain or inline scripts on some pages.
 
 A host's own routes stay outside the wiki, but can draw their pages through it, with the wiki's template, styles and live updates:
 

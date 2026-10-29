@@ -20,8 +20,12 @@ const PROMPT: &str = "README.md";
 const FILES: &[(&str, &str)] = agent_wiki_derive::embed_folder!("reference");
 
 /// The reference as a wiki mounted under the wiki at `base`, with the wiki's
-/// stylesheet. Indexed before it is returned.
-pub(crate) async fn build(base: &str, stylesheet: Option<String>) -> Result<Wiki> {
+/// stylesheet and scripts filter. Indexed before it is returned.
+pub(crate) async fn build(
+    base: &str,
+    stylesheet: Option<String>,
+    scripts: Option<crate::ScriptsFn>,
+) -> Result<Wiki> {
     let prompt = FILES
         .iter()
         .find(|(path, _)| *path == PROMPT)
@@ -52,6 +56,7 @@ pub(crate) async fn build(base: &str, stylesheet: Option<String>) -> Result<Wiki
             template: DefaultTemplate,
             index,
             stylesheet,
+            scripts,
             _watcher: None,
             indexed,
             tabs: tabs::Tabs::new(),

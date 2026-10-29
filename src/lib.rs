@@ -11,6 +11,7 @@ mod parse;
 mod query;
 mod reference;
 mod root;
+mod scripts;
 mod signals;
 mod tabs;
 mod template;
@@ -45,6 +46,7 @@ pub use crate::mcp::{
 };
 pub use crate::parse::{BlockStream, Host, InlineStream, Never, Plain};
 pub use crate::query::{Direction, Entity, Filter, Query, Sort, filter};
+pub use crate::scripts::{Script, ScriptKind};
 pub use crate::signals::DocumentChange;
 pub use crate::template::{BodyCtx, DefaultTemplate, DocumentMeta, HeadCtx, PageKind, Template};
 pub use crate::tree::{Align, BlockKind, Children, Content, InlineKind, KindRef, NodeRef, Parsed};
@@ -97,6 +99,9 @@ struct Inner<P: Host> {
     index: Index<P>,
     /// Host CSS emitted after the built-in stylesheet on every page.
     stylesheet: Option<String>,
+    /// Whether a script in a page's body runs; `None` runs them all with no
+    /// policy.
+    scripts: Option<ScriptsFn>,
     /// Keeps the index current; dropping it stops the watch. `None` for
     /// embedded files, which never change.
     _watcher: Option<Debouncer<RecommendedWatcher>>,
@@ -123,6 +128,7 @@ impl Wiki {
             root: root.into(),
             base_path: String::from("/"),
             stylesheet: None,
+            scripts: None,
             index_storage: IndexStorage::default(),
             host: Plain,
             template: DefaultTemplate,
@@ -180,6 +186,7 @@ pub struct WikiBuilder<P: Host = Plain> {
     root: PathBuf,
     base_path: String,
     stylesheet: Option<String>,
+    scripts: Option<ScriptsFn>,
     index_storage: IndexStorage,
     host: P,
     template: P::Template,
@@ -198,6 +205,7 @@ impl<P: Host> WikiBuilder<P> {
             root: self.root,
             base_path: self.base_path,
             stylesheet: self.stylesheet,
+            scripts: self.scripts,
             index_storage: self.index_storage,
             host,
             template,
@@ -241,6 +249,19 @@ impl<P: Host> WikiBuilder<P> {
         self
     }
 
+    /// Whether a script in a page's body may run: anything in the htmx root,
+    /// the template's `body` and the documents' raw HTML included. Every
+    /// script runs as written unless this is set. When it is, each page
+    /// carries a Content-Security-Policy that allows the library's own
+    /// scripts, those in the template's `head`, and those the filter allows;
+    /// the ones it denies are removed from the page. Code evaluated from a
+    /// string (`eval`, htmx's `hx-on`) never runs, nor does a script in an
+    /// image the wiki serves. `|_| false` blocks every script from content.
+    pub fn scripts(mut self, filter: impl Fn(&Script<'_>) -> bool + Send + Sync + 'static) -> Self {
+        self.scripts = Some(Arc::new(filter));
+        self
+    }
+
     /// Where the index is kept: [`IndexStorage::InMemory`] (the default) or
     /// on disk with [`IndexStorage::FilePath`].
     pub fn index_storage(mut self, storage: IndexStorage) -> Self {
@@ -279,7 +300,8 @@ impl<P: Host> WikiBuilder<P> {
         let base = normalize_base(&self.base_path);
         let signals = Arc::new(signals::Signals::new(base.clone()));
         let watcher = watch::start(root.clone(), index.clone(), signals.clone())?;
-        let reference = reference::build(&base, self.stylesheet.clone()).await?;
+        let reference =
+            reference::build(&base, self.stylesheet.clone(), self.scripts.clone()).await?;
         let (done, indexed) = tokio::sync::watch::channel(false);
         tokio::spawn({
             let (root, index) = (root.clone(), index.clone());
@@ -298,6 +320,7 @@ impl<P: Host> WikiBuilder<P> {
                 template: self.template,
                 index,
                 stylesheet: self.stylesheet,
+                scripts: self.scripts,
                 _watcher: Some(watcher),
                 indexed,
                 signals,
@@ -320,3 +343,6 @@ pub(crate) fn normalize_base(base: &str) -> String {
         format!("/{trimmed}")
     }
 }
+
+/// Whether a script in a page's body runs; see [`WikiBuilder::scripts`].
+pub(crate) type ScriptsFn = Arc<dyn Fn(&Script<'_>) -> bool + Send + Sync>;
