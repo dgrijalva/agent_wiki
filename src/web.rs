@@ -5,7 +5,7 @@ use axum::Json;
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::request::Parts;
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -21,6 +21,7 @@ use crate::links::local_href;
 use crate::names::{encode_component, folder_url, image_type_of, url_to_path, url_to_rel};
 use crate::parse::Host;
 use crate::root::Root;
+use crate::scripts::{NO_SCRIPTS, Policy, Script};
 use crate::tabs::PushedState;
 use crate::template::{BodyCtx, DocumentMeta, HeadCtx, PageKind, Template};
 
@@ -394,7 +395,7 @@ async fn draw_page<P: Host>(
     let mut head = HeadCtx::new(&page.kind, request, base, page.title);
     let host_head = template.head(&mut head).await;
     let body = BodyCtx::new(wiki, &page.kind, request, page.crumbs);
-    let root = template.body(&body, content).await;
+    let mut root = template.body(&body, content).await;
     let live = page.live.as_deref();
     // Only a document page counts as open, for the `open_files` tool.
     let document = matches!(page.kind, PageKind::Document(_));
@@ -414,17 +415,51 @@ async fn draw_page<P: Host>(
     // Keeps the root's hx attributes off its descendants, so a host element
     // making its own htmx request isn't given `hx-select="#htmx-root"`.
     let disinherit = live.map(|_| "*");
-    let filter = &*wiki.inner.integrity;
+    let integrity = &*wiki.inner.integrity;
+    let head_scripts = html! {
+        script src=(HTMX_JS.url) integrity=[HTMX_JS.integrity_for(integrity)] crossorigin="anonymous" {}
+        script src=(HTMX_SSE_JS.url) integrity=[HTMX_SSE_JS.integrity_for(integrity)] crossorigin="anonymous" {}
+    };
+    let tail_scripts = html! {
+        script src=(HLJS_JS.url) integrity=[HLJS_JS.integrity_for(integrity)] crossorigin="anonymous" {}
+        script { "hljs.highlightAll();" }
+        script src=(MERMAID_JS.url) integrity=[MERMAID_JS.integrity_for(integrity)] crossorigin="anonymous" {}
+        script { (PreEscaped(MERMAID_INIT_JS)) }
+        script { (PreEscaped(LINE_JS)) }
+        script { (PreEscaped(TASK_JS)) }
+        script { (PreEscaped(COPY_JS)) }
+        @if tab.is_some() {
+            script { (PreEscaped(STATE_JS)) }
+        }
+    };
+    let csp = wiki.inner.script_filter.as_ref().map(|filter| {
+        let mut policy = Policy::default();
+        for trusted in [&head_scripts, &host_head, &tail_scripts] {
+            policy.trust(&trusted.0);
+        }
+        let url = request.uri.path();
+        root = PreEscaped(policy.filter(&root.0, |kind| {
+            filter(&Script {
+                page: &page.kind,
+                url,
+                kind,
+            })
+        }));
+        policy.csp()
+    });
     html! {
         (DOCTYPE)
         html {
             head {
                 meta charset="utf-8";
+                @if let Some(csp) = &csp {
+                    meta http-equiv="Content-Security-Policy" content=(csp);
+                }
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (head.title()) }
-                link rel="stylesheet" href=(HLJS_CSS.url) integrity=[HLJS_CSS.integrity_for(filter)]
+                link rel="stylesheet" href=(HLJS_CSS.url) integrity=[HLJS_CSS.integrity_for(integrity)]
                     crossorigin="anonymous" media="(prefers-color-scheme: light)";
-                link rel="stylesheet" href=(HLJS_DARK_CSS.url) integrity=[HLJS_DARK_CSS.integrity_for(filter)]
+                link rel="stylesheet" href=(HLJS_DARK_CSS.url) integrity=[HLJS_DARK_CSS.integrity_for(integrity)]
                     crossorigin="anonymous" media="(prefers-color-scheme: dark)";
                 @if !head.default_styles_suppressed() {
                     style { (PreEscaped(STYLE)) }
@@ -432,8 +467,7 @@ async fn draw_page<P: Host>(
                 @if let Some(css) = &wiki.inner.stylesheet {
                     style { (PreEscaped(css)) }
                 }
-                script src=(HTMX_JS.url) integrity=[HTMX_JS.integrity_for(filter)] crossorigin="anonymous" {}
-                script src=(HTMX_SSE_JS.url) integrity=[HTMX_SSE_JS.integrity_for(filter)] crossorigin="anonymous" {}
+                (head_scripts)
                 (host_head)
             }
             body hx-ext=[sse] sse-connect=[events] data-tab=[tab.as_deref()] data-base=(base) {
@@ -441,16 +475,7 @@ async fn draw_page<P: Host>(
                     hx-swap=[swap] hx-disinherit=[disinherit] {
                     (root)
                 }
-                script src=(HLJS_JS.url) integrity=[HLJS_JS.integrity_for(filter)] crossorigin="anonymous" {}
-                script { "hljs.highlightAll();" }
-                script src=(MERMAID_JS.url) integrity=[MERMAID_JS.integrity_for(filter)] crossorigin="anonymous" {}
-                script { (PreEscaped(MERMAID_INIT_JS)) }
-                script { (PreEscaped(LINE_JS)) }
-                script { (PreEscaped(TASK_JS)) }
-                script { (PreEscaped(COPY_JS)) }
-                @if tab.is_some() {
-                    script { (PreEscaped(STATE_JS)) }
-                }
+                (tail_scripts)
             }
         }
     }
@@ -562,7 +587,18 @@ async fn image<P: Host>(
         return not_found(wiki, request).await;
     }
     match tokio::fs::read(root.join(rel)).await {
-        Ok(bytes) => ([(header::CONTENT_TYPE, content_type)], bytes).into_response(),
+        Ok(bytes) => {
+            let mut response = ([(header::CONTENT_TYPE, content_type)], bytes).into_response();
+            // An SVG opened on its own, or framed by a page, would otherwise
+            // run its scripts with the wiki's origin.
+            if wiki.inner.script_filter.is_some() {
+                response.headers_mut().insert(
+                    header::CONTENT_SECURITY_POLICY,
+                    HeaderValue::from_static(NO_SCRIPTS),
+                );
+            }
+            response
+        }
         Err(_) => not_found(wiki, request).await,
     }
 }

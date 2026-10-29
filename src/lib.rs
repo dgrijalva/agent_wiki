@@ -12,6 +12,7 @@ mod parse;
 mod query;
 mod reference;
 mod root;
+mod scripts;
 mod signals;
 mod tabs;
 mod template;
@@ -47,6 +48,7 @@ pub use crate::mcp::{
 };
 pub use crate::parse::{BlockStream, Host, InlineStream, Never, Plain};
 pub use crate::query::{Direction, Entity, Filter, Query, Sort, filter};
+pub use crate::scripts::{Script, ScriptKind};
 pub use crate::signals::DocumentChange;
 pub use crate::template::{BodyCtx, DefaultTemplate, DocumentMeta, HeadCtx, PageKind, Template};
 pub use crate::tree::{
@@ -103,6 +105,8 @@ struct Inner<P: Host> {
     stylesheet: Option<String>,
     /// Whether a CDN asset, by its URL, carries `integrity`.
     integrity: IntegrityFn,
+    /// Decides which scripts in pages' content run; `None` runs them all.
+    script_filter: Option<scripts::Filter>,
     /// Keeps the index current; dropping it stops the watch. `None` for
     /// embedded files, which never change.
     _watcher: Option<Debouncer<RecommendedWatcher>>,
@@ -133,6 +137,7 @@ impl Wiki {
             base_path: String::from("/"),
             stylesheet: None,
             integrity: None,
+            script_filter: None,
             index_storage: IndexStorage::default(),
             host: Plain,
             template: DefaultTemplate,
@@ -192,6 +197,7 @@ pub struct WikiBuilder<P: Host = Plain> {
     base_path: String,
     stylesheet: Option<String>,
     integrity: Option<IntegrityFn>,
+    script_filter: Option<scripts::Filter>,
     index_storage: IndexStorage,
     host: P,
     template: P::Template,
@@ -212,6 +218,7 @@ impl<P: Host> WikiBuilder<P> {
             base_path: self.base_path,
             stylesheet: self.stylesheet,
             integrity: self.integrity,
+            script_filter: self.script_filter,
             index_storage: self.index_storage,
             host,
             template,
@@ -258,7 +265,8 @@ impl<P: Host> WikiBuilder<P> {
 
     /// Whether the CDN asset at a URL carries subresource integrity, so the
     /// browser refuses it unless its bytes match the pinned hash. Every asset
-    /// does unless this is set.
+    /// does unless this is set. A [`script_filter`](Self::script_filter)'s
+    /// policy allows each asset by its URL, with or without integrity.
     pub fn integrity(mut self, filter: impl Fn(&str) -> bool + Send + Sync + 'static) -> Self {
         self.integrity = Some(Arc::new(filter));
         self
@@ -270,6 +278,22 @@ impl<P: Host> WikiBuilder<P> {
     /// only for `localhost`, `127.0.0.1` and `::1`.
     pub fn allowed_hosts(mut self, hosts: AllowedHosts) -> Self {
         self.allowed_hosts = Some(hosts);
+        self
+    }
+
+    /// Decides which scripts in each page's body may run: everything in the
+    /// htmx root, the template's `body` and the documents' raw HTML included.
+    /// Without a filter, every script runs as written. With one, each page
+    /// carries a Content-Security-Policy that allows the library's own
+    /// scripts, those in the template's `head`, and those the filter allows;
+    /// the ones it denies are removed from the page. Code evaluated from a
+    /// string (`eval`, htmx's `hx-on`) never runs, nor does a script in an
+    /// image the wiki serves. `|_| false` blocks every script from content.
+    pub fn script_filter(
+        mut self,
+        filter: impl Fn(&Script<'_>) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.script_filter = Some(Arc::new(filter));
         self
     }
 
@@ -312,7 +336,13 @@ impl<P: Host> WikiBuilder<P> {
         let signals = Arc::new(signals::Signals::new(base.clone()));
         let watcher = watch::start(root.clone(), index.clone(), signals.clone())?;
         let integrity: IntegrityFn = self.integrity.unwrap_or_else(|| Arc::new(|_: &str| true));
-        let reference = reference::build(&base, self.stylesheet.clone(), integrity.clone()).await?;
+        let reference = reference::build(
+            &base,
+            self.stylesheet.clone(),
+            integrity.clone(),
+            self.script_filter.clone(),
+        )
+        .await?;
         let (done, indexed) = tokio::sync::watch::channel(false);
         tokio::spawn({
             let (root, index) = (root.clone(), index.clone());
@@ -332,6 +362,7 @@ impl<P: Host> WikiBuilder<P> {
                 index,
                 stylesheet: self.stylesheet,
                 integrity,
+                script_filter: self.script_filter,
                 _watcher: Some(watcher),
                 indexed,
                 signals,

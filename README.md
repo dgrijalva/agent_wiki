@@ -19,6 +19,7 @@ Early prototype. The API will change.
 - **Links:** headings are linkable, `[[Page#Heading]]` jumps to the heading, `#:N` links to line N of the page's source, and `{base}/foo/bar.md` reaches the page at `{base}/foo/bar`.
 - **Images** and ordinary links resolve relative to the page, or from the root with a leading `/`, and never leave the root folder.
 - **Styling:** a built-in stylesheet with dark mode. A host stylesheet can be layered on top or replace it.
+- **Scripts in notes** run as written by default. A host's script filter decides which run; blocking them all is the recommended setup. See [Embedding in an axum app](#embedding-in-an-axum-app).
 - **Startup is immediate.** The folder is indexed in the background while pages are served.
 - **MCP server** for agents: search, document overviews, reading documents by line range or section, links into the web view, and what the user has open and selected. See [MCP](#mcp).
 - **A reference for agents**, built in and served at `{base}/_wiki/reference`: using the MCP, onboarding, and building your own application. Its source is [`reference/`](reference/).
@@ -69,6 +70,7 @@ Local use only, for now: `open_files` reports every browser's open pages, and re
 let wiki = agent_wiki::Wiki::builder(root)
     .base_path("/docs")   // optional; default "/"
     .stylesheet(host_css) // optional; CSS layered on top of the built-in stylesheet
+    .script_filter(|_| false) // recommended; no script in a note runs (default: all run)
     .index_storage(agent_wiki::IndexStorage::FilePath(index_file)) // optional; default InMemory
     .allowed_hosts(agent_wiki::AllowedHosts::loopback()) // optional; refuses other `Host`s, against DNS rebinding
     .build()
@@ -79,6 +81,8 @@ let app = app.merge(wiki.router());
 Every generated URL carries the base path. The wiki's own routes live under `{base}/_wiki/`, including the MCP endpoint.
 
 `.allowed_hosts` refuses, with `403`, a request to any of the wiki's routes whose `Host` isn't listed (`AllowedHosts::loopback()`, `AllowedHosts::new(["wiki.example.com"])`, or `AllowedHosts::any()` for no check), and sets the MCP endpoint's list to match. Without it, only the MCP endpoint checks, for loopback hosts. The binary uses `AllowedHosts::loopback()`.
+
+Raw HTML in a note passes through, so without a script filter a note's `<script>`, event handlers and `javascript:` links run with the site's origin. With one, every page carries a Content-Security-Policy that allows the library's own scripts, the template's `head` scripts, and the scripts the filter allows (by hash or URL); the rest are removed from the page and blocked. The filter gets each script's page and kind (`Inline`, `External`, `Handler`, `Url`), so it can allow, say, files from one domain or inline scripts on some pages.
 
 A host's own routes stay outside the wiki, but can draw their pages through it, with the wiki's template, styles and live updates:
 

@@ -21,6 +21,7 @@ use agent_wiki::{AllowedHosts, Wiki};
 async fn main() -> anyhow::Result<()> {
     let wiki = Wiki::builder("notes")
         .stylesheet("body { max-width: 60rem; }")
+        .script_filter(|_| false) // recommended: no script in a note runs
         .allowed_hosts(AllowedHosts::loopback())
         .build()
         .await?;
@@ -46,6 +47,33 @@ The router serves the pages, the MCP endpoint at `{base}/_wiki/mcp`, and this re
 
 The MCP endpoint is checked against the same list. Without `.allowed_hosts`, the web pages answer any `Host`, and only the MCP endpoint checks, accepting `localhost`, `127.0.0.1` and `::1`. A request with no `Host` (and, over HTTP/2, no `:authority`) is refused. The check covers only the wiki's own routes, not the application's routes merged beside them.
 
+## Scripts in notes
+
+Raw HTML in a note passes through. Without `.script_filter`, a `<script>`, an `onerror=` handler or a `javascript:` link in a clipped web page, pasted HTML or a cloned repository's docs runs with the site's origin, where it can read every other page. Block them, as above, unless the user needs scripts in their notes: agent_wiki's own scripts (highlighting, diagrams, live updates) and the scripts a `Template` puts in its `head` keep running.
+
+To allow some, decide per script; each page then allows only what the filter allowed:
+
+```rust
+use agent_wiki::{PageKind, ScriptKind};
+
+let wiki = Wiki::builder("notes")
+    .script_filter(|script| match script.kind() {
+        // Files from one domain, on any page.
+        ScriptKind::External(src) => src.starts_with("https://widgets.example.com/"),
+        // Code written in the notes under Dashboards/.
+        ScriptKind::Inline(_) => matches!(
+            script.page(),
+            PageKind::Document(doc) if doc.path().starts_with("Dashboards/")
+        ),
+        // Event handlers (`onclick=`) and `javascript:` links.
+        _ => false,
+    })
+    .build()
+    .await?;
+```
+
+Under a filter, `eval` and htmx's `hx-on` never run, and a script that an allowed script adds to the page runs only if the page's policy already allows its URL or code.
+
 ## What to use for what
 
 | The user wants | Use |
@@ -57,6 +85,7 @@ The MCP endpoint is checked against the same list. Without `.allowed_hosts`, the
 | Their own pages, in the wiki's look | `wiki.custom_page(&request, title)`, drawn with the library's components (`RecentlyEdited`, `TagCloud`, `Contents`, …). `.live()` refetches it when the application calls `wiki.signal(path)`. |
 | Their own records indexed alongside the documents | `#[derive(EntityType)]`, registered with `.entity::<T>()` and pushed by `Host::extract`; queried with `wiki.query::<T>()`. |
 | Their own agent tools | A struct implementing `agent_wiki::Tool`, added with `.tools(\|wiki\| wiki.tools().with_route(route(MyTool::new(wiki.clone()))))`; or serve `wiki.tools()` from their own rmcp server. |
+| Control over scripts in notes | `.script_filter(…)`, which can allow some by page or source; blocking them all is recommended. See above. |
 | Their own auth | The application's own axum middleware, around `wiki.router()`. |
-| Some CDN assets loaded without integrity checks | `.integrity(\|url\| …)` returns whether the asset at `url` carries subresource integrity; every asset does unless it is set. |
+| Some CDN assets loaded without integrity checks | `.integrity(\|url\| …)` returns whether the asset at `url` carries subresource integrity; every asset does unless it is set. A `.script_filter` allows each asset by its URL either way. |
 | The wiki on its own domain | `.allowed_hosts(AllowedHosts::new([…]))`, for the web pages and the MCP endpoint alike; see The `Host` check above. |
