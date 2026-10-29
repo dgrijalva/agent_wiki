@@ -122,7 +122,7 @@ async fn home_page_renders() {
     assert!(tag_line.contains("href=\"/_wiki/tag/meta\""));
 
     assert!(body.contains("@highlightjs/cdn-assets@11.12.0/highlight.min.js"));
-    assert!(body.contains("mermaid@12/dist/mermaid.esm.min.mjs"));
+    assert!(body.contains("pele@1/dist/pele.js"));
 }
 
 #[tokio::test]

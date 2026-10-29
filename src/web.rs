@@ -29,7 +29,7 @@ const HLJS_DARK_CSS: &str =
     "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/rose-pine.min.css";
 const HLJS_JS: &str =
     "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/highlight.min.js";
-const MERMAID_JS: &str = "https://cdn.jsdelivr.net/npm/mermaid@12/dist/mermaid.esm.min.mjs";
+const PELE_JS: &str = "https://cdn.jsdelivr.net/npm/pele@1/dist/pele.js";
 const HTMX_JS: &str = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/dist/htmx.min.js";
 const HTMX_SSE_JS: &str = "https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4/dist/sse.min.js";
 
@@ -73,7 +73,13 @@ code { font-family: var(--mono); font-size: 0.875em; }
 :not(pre) > code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 0.3rem; }
 pre { overflow-x: auto; border-radius: 0.5rem; background: var(--code-bg); }
 pre > code { display: block; padding: 1rem; }
-pre.mermaid { background: none; }
+pre.mermaid { background: none; font-family: inherit;
+  --pele-bg: var(--bg); --pele-fg: var(--fg); --pele-muted: var(--muted);
+  --pele-line: var(--muted); --pele-surface: var(--surface); --pele-surface-alt: var(--code-bg);
+  --pele-border: var(--border); --pele-accent: var(--link); --pele-critical: var(--unresolved);
+  --pele-error: var(--unresolved); }
+.diagram-error { margin-bottom: 0.5rem; white-space: pre-wrap; font-family: var(--mono);
+  font-size: 0.875em; color: var(--unresolved); }
 table { border-collapse: collapse; }
 th, td { border: 1px solid var(--border); padding: 0.3rem 0.75rem; text-align: left; vertical-align: top; }
 th { background: var(--surface); }
@@ -307,13 +313,30 @@ async fn draw_page<P: Host>(
     // Keeps the root's hx attributes off its descendants, so a host element
     // making its own htmx request isn't given `hx-select="#htmx-root"`.
     let disinherit = live.map(|_| "*");
-    let mermaid = format!(
+    // A diagram that doesn't parse shows its error, then its source as code.
+    let diagrams = format!(
         "
-import mermaid from '{MERMAID_JS}';
-const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-mermaid.initialize({{ startOnLoad: true, theme: dark ? 'dark' : 'default' }});
+import {{ mount }} from '{PELE_JS}';
+const draw = () => {{
+  for (const pre of document.querySelectorAll('pre.mermaid')) {{
+    const source = pre.textContent;
+    const drawn = mount(pre, source);
+    if (!drawn.error) continue;
+    drawn.destroy();
+    const error = document.createElement('div');
+    error.className = 'diagram-error';
+    error.textContent = drawn.error.message ?? String(drawn.error);
+    const code = document.createElement('code');
+    code.className = 'nohighlight';
+    code.textContent = source;
+    pre.classList.remove('mermaid');
+    pre.replaceChildren(code);
+    pre.before(error);
+  }}
+}};
+draw();
 document.addEventListener('htmx:afterSwap', (e) => {{
-  if (e.detail.target?.id === 'htmx-root') {{ hljs.highlightAll(); mermaid.run(); }}
+  if (e.detail.target?.id === 'htmx-root') {{ hljs.highlightAll(); draw(); }}
 }});
 "
     );
@@ -343,7 +366,7 @@ document.addEventListener('htmx:afterSwap', (e) => {{
                 }
                 script src=(HLJS_JS) {}
                 script { "hljs.highlightAll();" }
-                script type="module" { (PreEscaped(mermaid)) }
+                script type="module" { (PreEscaped(diagrams)) }
                 script { (PreEscaped(LINE_JS)) }
                 script { (PreEscaped(COPY_JS)) }
                 @if tab.is_some() {
