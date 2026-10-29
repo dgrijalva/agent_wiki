@@ -249,9 +249,9 @@ impl<P: Host> WikiBuilder<P> {
         self
     }
 
-    /// Refuses, with `403`, every request to the router whose `Host` isn't
-    /// one of `hosts`, against DNS rebinding. The MCP endpoint is checked
-    /// against the same list. Without it, only the MCP endpoint checks, and
+    /// Refuses, with `403`, every request to the router whose `Host`
+    /// `hosts` doesn't allow, against DNS rebinding. The MCP endpoint is
+    /// checked the same way. Without it, only the MCP endpoint checks, and
     /// only for `localhost`, `127.0.0.1` and `::1`.
     pub fn allowed_hosts(mut self, hosts: AllowedHosts) -> Self {
         self.allowed_hosts = Some(hosts);

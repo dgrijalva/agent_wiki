@@ -2,6 +2,9 @@
 //! resolves to this server still addresses its requests to that name, so
 //! only requests addressed to a host the wiki is known by are served.
 
+use std::fmt;
+use std::sync::Arc;
+
 use axum::extract::{Request, State};
 use axum::http::uri::Authority;
 use axum::http::{StatusCode, header};
@@ -10,13 +13,19 @@ use axum::response::{IntoResponse, Response};
 
 /// The hosts a wiki answers to, checked against every request's `Host`; set
 /// with [`WikiBuilder::allowed_hosts`](crate::WikiBuilder::allowed_hosts).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct AllowedHosts {
-    /// `None` allows every host.
-    hosts: Option<Vec<Allowed>>,
+    check: Check,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
+enum Check {
+    Any,
+    List(Vec<Allowed>),
+    Fn(Arc<dyn Fn(&str) -> bool + Send + Sync>),
+}
+
+#[derive(Debug, Clone)]
 struct Allowed {
     host: String,
     /// `None` matches any port.
@@ -49,28 +58,53 @@ impl AllowedHosts {
                 }
             })
             .collect();
-        AllowedHosts { hosts: Some(hosts) }
+        AllowedHosts {
+            check: Check::List(hosts),
+        }
     }
 
     /// Every host: no check, on the MCP endpoint either.
     pub fn any() -> Self {
-        AllowedHosts { hosts: None }
+        AllowedHosts { check: Check::Any }
+    }
+
+    /// The hosts `allow` returns `true` for. It receives the host without
+    /// its port, lowercased, an IPv6 address without brackets (`::1`); a
+    /// request naming no host is refused without calling it.
+    pub fn from_fn(allow: impl Fn(&str) -> bool + Send + Sync + 'static) -> Self {
+        AllowedHosts {
+            check: Check::Fn(Arc::new(allow)),
+        }
     }
 
     /// Whether a request addressed to `authority` (a `Host` value, or
     /// `None` when the request names no host) is served.
     fn allows(&self, authority: Option<&str>) -> bool {
-        let Some(hosts) = &self.hosts else {
+        if let Check::Any = self.check {
             return true;
-        };
+        }
         let Some(authority) = authority.and_then(|a| Authority::try_from(a).ok()) else {
             return false;
         };
         let host = normalize(authority.host());
         let port = authority.port_u16();
-        hosts
-            .iter()
-            .any(|allowed| allowed.host == host && allowed.port.is_none_or(|p| port == Some(p)))
+        match &self.check {
+            Check::Any => true,
+            Check::List(hosts) => hosts.iter().any(|allowed| {
+                allowed.host == host && allowed.port.is_none_or(|p| port == Some(p))
+            }),
+            Check::Fn(allow) => allow(&host),
+        }
+    }
+}
+
+impl fmt::Debug for AllowedHosts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.check {
+            Check::Any => f.write_str("AllowedHosts::any()"),
+            Check::List(hosts) => f.debug_list().entries(hosts).finish(),
+            Check::Fn(_) => f.write_str("AllowedHosts::from_fn(..)"),
+        }
     }
 }
 
@@ -147,5 +181,23 @@ mod tests {
         let hosts = AllowedHosts::any();
         assert!(hosts.allows(Some("evil.example")));
         assert!(hosts.allows(None));
+    }
+
+    #[test]
+    fn from_fn_receives_the_normalized_host() {
+        let hosts =
+            AllowedHosts::from_fn(|host| host.ends_with(".tailnet.example") || host == "::1");
+        assert!(hosts.allows(Some("wiki.tailnet.example")));
+        assert!(hosts.allows(Some("Wiki.Tailnet.Example:3000")));
+        assert!(hosts.allows(Some("[::1]:3000")));
+        assert!(!hosts.allows(Some("evil.example")));
+        assert!(!hosts.allows(Some("tailnet.example.evil:3000")));
+    }
+
+    #[test]
+    fn from_fn_is_not_called_without_a_host() {
+        let hosts = AllowedHosts::from_fn(|_| panic!("called without a host"));
+        assert!(!hosts.allows(None));
+        assert!(!hosts.allows(Some("local host")));
     }
 }
