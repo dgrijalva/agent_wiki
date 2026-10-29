@@ -119,6 +119,11 @@ async fn home_page_renders() {
         assert!(body.contains(&item), "{item}");
     }
     assert!(body.contains("box.indeterminate = true"));
+    assert!(body.contains(".task-list-item[data-task=\"-\"] .task-list-item-checkbox {"));
+    assert!(body.contains(".task-list-item[data-task=\"-\"] .task-list-item-checkbox:checked {"));
+    assert!(
+        body.contains(".task-list-item[data-task=\"-\"] .task-list-item-checkbox:indeterminate {")
+    );
     assert!(body.contains("<code>#notatag</code>"));
     assert!(!body.contains("/_wiki/tag/notatag"));
     assert!(body.contains("href=\"/_wiki/tag/project/alpha\""));
