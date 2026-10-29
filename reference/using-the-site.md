@@ -13,7 +13,7 @@ A document page has, above its content:
 - Its **tags**, and its **frontmatter** as a table, collapsed.
 - A **table of contents**, collapsed, listing headings down to `####`.
 
-Code blocks are highlighted, and `mermaid` blocks are drawn as diagrams.
+Code blocks are highlighted, and `mermaid` blocks are drawn as diagrams. A diagram that doesn't parse shows the parse error, then its source as a code block.
 
 ## Folder index pages
 
