@@ -17,6 +17,8 @@ Code blocks are highlighted, and `mermaid` blocks are drawn as diagrams. Callout
 
 Task list items (`- [ ] …`) show a checkbox: `[x]` checked, `[/]` in progress as a partly filled box, `[-]` canceled as muted and struck through, checkbox included. Any other character in the brackets shows as open.
 
+Scripts written into a note (`<script>` elements, `onclick=`-style handlers, `javascript:` links) don't run in the binary unless it was started with `--allow-scripts`; a blocked `<script>` shows in the page source as `<!-- script blocked -->`. An application decides which run with its script filter.
+
 ## Folder index pages
 
 Every folder, the root included, has an index page:
