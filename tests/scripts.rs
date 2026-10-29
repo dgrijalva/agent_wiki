@@ -155,7 +155,7 @@ async fn the_default_runs_every_script_as_written() {
 async fn the_blocking_filter_runs_no_content_script() {
     let dir = vault();
     let wiki = Wiki::builder(dir.path())
-        .script_filter(|_| false)
+        .scripts(|_| false)
         .build()
         .await
         .unwrap();
@@ -224,7 +224,7 @@ async fn an_allow_list_filter_runs_only_what_it_allows() {
     let dir = vault();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let wiki = Wiki::builder(dir.path())
-        .script_filter({
+        .scripts({
             let seen = seen.clone();
             move |script: &Script| {
                 let page = match script.page() {
@@ -337,7 +337,7 @@ async fn a_templates_head_is_trusted_and_its_body_filtered() {
     let dir = vault();
     let wiki = Wiki::builder(dir.path())
         .host(ScriptedHost, ScriptedTemplate)
-        .script_filter(|_| false)
+        .scripts(|_| false)
         .build()
         .await
         .unwrap();

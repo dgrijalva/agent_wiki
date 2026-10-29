@@ -70,7 +70,7 @@ Local use only, for now: `open_files` reports every browser's open pages, and re
 let wiki = agent_wiki::Wiki::builder(root)
     .base_path("/docs")   // optional; default "/"
     .stylesheet(host_css) // optional; CSS layered on top of the built-in stylesheet
-    .script_filter(|_| false) // recommended; no script in a note runs (default: all run)
+    .scripts(|_| false)   // recommended; no script in a note runs (default: all run)
     .index_storage(agent_wiki::IndexStorage::FilePath(index_file)) // optional; default InMemory
     .build()
     .await?;

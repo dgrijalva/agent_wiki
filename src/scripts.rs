@@ -8,7 +8,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use base64::Engine;
 use lol_html::errors::RewritingError;
@@ -20,7 +19,7 @@ use sha2::{Digest, Sha256};
 use crate::template::PageKind;
 
 /// A script in a page's content, which the host's filter allows or denies
-/// ([`WikiBuilder::script_filter`](crate::WikiBuilder::script_filter)).
+/// ([`WikiBuilder::scripts`](crate::WikiBuilder::scripts)).
 pub struct Script<'a> {
     pub(crate) page: &'a PageKind,
     pub(crate) url: &'a str,
@@ -56,8 +55,6 @@ pub enum ScriptKind<'a> {
     /// A `javascript:` URL, such as a link's `href`.
     Url(&'a str),
 }
-
-pub(crate) type Filter = Arc<dyn Fn(&Script<'_>) -> bool + Send + Sync>;
 
 /// The policy for a response that runs no scripts, such as an image.
 pub(crate) const NO_SCRIPTS: &str = "script-src 'none'; object-src 'none'";

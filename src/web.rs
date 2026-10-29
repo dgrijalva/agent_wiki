@@ -334,7 +334,7 @@ document.addEventListener('htmx:afterSwap', (e) => {{
             script { (PreEscaped(STATE_JS)) }
         }
     };
-    let csp = wiki.inner.script_filter.as_ref().map(|filter| {
+    let csp = wiki.inner.scripts.as_ref().map(|filter| {
         let mut policy = Policy::default();
         for trusted in [&head_scripts, &host_head, &tail_scripts] {
             policy.trust(&trusted.0);
@@ -492,7 +492,7 @@ async fn image<P: Host>(
             let mut response = ([(header::CONTENT_TYPE, content_type)], bytes).into_response();
             // An SVG opened on its own, or framed by a page, would otherwise
             // run its scripts with the wiki's origin.
-            if wiki.inner.script_filter.is_some() {
+            if wiki.inner.scripts.is_some() {
                 response.headers_mut().insert(
                     header::CONTENT_SECURITY_POLICY,
                     HeaderValue::from_static(NO_SCRIPTS),

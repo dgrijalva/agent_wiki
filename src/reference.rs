@@ -8,7 +8,7 @@ use anyhow::Result;
 
 use crate::index::Index;
 use crate::root::Root;
-use crate::{DefaultTemplate, IndexStorage, Inner, Plain, Wiki, mcp, scripts, signals, tabs};
+use crate::{DefaultTemplate, IndexStorage, Inner, Plain, Wiki, mcp, signals, tabs};
 
 /// Where the reference is, relative to the wiki root.
 pub(crate) const PATH: &str = "_wiki/reference";
@@ -20,11 +20,11 @@ const PROMPT: &str = "README.md";
 const FILES: &[(&str, &str)] = agent_wiki_derive::embed_folder!("reference");
 
 /// The reference as a wiki mounted under the wiki at `base`, with the wiki's
-/// stylesheet and script filter. Indexed before it is returned.
+/// stylesheet and scripts filter. Indexed before it is returned.
 pub(crate) async fn build(
     base: &str,
     stylesheet: Option<String>,
-    script_filter: Option<scripts::Filter>,
+    scripts: Option<crate::ScriptsFn>,
 ) -> Result<Wiki> {
     let prompt = FILES
         .iter()
@@ -56,7 +56,7 @@ pub(crate) async fn build(
             template: DefaultTemplate,
             index,
             stylesheet,
-            script_filter,
+            scripts,
             _watcher: None,
             indexed,
             tabs: tabs::Tabs::new(),
