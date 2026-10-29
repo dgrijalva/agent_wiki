@@ -292,7 +292,7 @@ Raw HTML in markdown passes through. (Dave, 2026-10-19)
 
 A page's content can hold scripts: `<script>` elements, event-handler attributes, and `javascript:` URLs, from raw HTML or from markdown links. Content that came from elsewhere (a clipped web page, pasted HTML, a cloned repository's docs) runs them with the wiki's origin, where they can read every other page.
 
-- [PROVISIONAL: a host sets a script filter through the builder, `.script_filter(|script| …)`, that allows or denies each script in a page's body. Without one, every script runs as written, as raw HTML passes through above. Frederic's request (2026-10-28).]
+- [PROVISIONAL: a host sets a script filter through the builder, `.script_filter(|script| …)`, that allows or denies each script in a page's body. Without one, every script runs as written, as raw HTML passes through above.]
 - [PROVISIONAL: the filter is given the page (`script.page()`, a `PageKind`, and `script.url()`, its URL path) and the script (`script.kind()`): `Inline(code)`, `External(src)` as written, `Handler { attribute, code }`, or `Url(javascript_url)`. Attribute values arrive with character references decoded.]
 - [PROVISIONAL: the recommended setup blocks every script in content, `.script_filter(|_| false)`, and `reference/building-an-application.md` says so. Model: GitHub, which runs no script from a document's HTML.]
 - [PROVISIONAL: under a filter, each page carries a Content-Security-Policy, and the policy is the enforcement. It is a `<meta http-equiv>` first in `<head>`, so a custom page a host serves itself carries it too.]
