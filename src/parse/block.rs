@@ -1294,7 +1294,7 @@ fn string_keys(v: &serde_norway::Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::cell::Cell;
 
     use maud::{Markup, html};
     use nom::branch::alt;
@@ -1855,6 +1855,18 @@ mod tests {
 
     struct NestHost;
 
+    thread_local! {
+        /// Lines offered to [`NestHost`] on this thread.
+        static OFFERED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// `md` drawn with [`NestHost`], and the lines offered to it.
+    fn draw_counted(md: &str) -> (String, usize) {
+        OFFERED.set(0);
+        let html = draw(&NestHost, md);
+        (html, OFFERED.get())
+    }
+
     /// `:::nK` … `:::/nK` or `- !openK` … `- !closeK`: blocks, each with its
     /// own closer, so they nest.
     struct Nest;
@@ -1871,6 +1883,7 @@ mod tests {
         type Template = DefaultTemplate;
 
         fn parse_block(&self, s: &mut BlockStream<'_, Self>) -> Option<Parsed<BlockKind<Self>>> {
+            OFFERED.set(OFFERED.get() + 1);
             for (open, close) in [(":::n", ":::/n"), ("- !open", "- !close")] {
                 if let Some(k) = s.try_parse(preceded(tag(open), digit1)) {
                     let body = s.blocks_until((tag(close), tag(k), eof))?;
@@ -1886,20 +1899,16 @@ mod tests {
         // The line after a list item, or after a quote's last line, is
         // probed and then claimed. Parsing a nested claim twice at each
         // level would double the work per level.
-        let nested = |before: &str, open: &str, close: &str| {
-            let opens: String = (0..24).map(|k| format!("{before}\n{open}{k}\n")).collect();
-            let closes: String = (0..24).rev().map(|k| format!("{close}{k}\n")).collect();
+        let nested = |n: usize, before: &str, open: &str, close: &str| {
+            let opens: String = (0..n).map(|k| format!("{before}\n{open}{k}\n")).collect();
+            let closes: String = (0..n).rev().map(|k| format!("{close}{k}\n")).collect();
             format!("{opens}x\n{closes}")
         };
-        for md in [
-            nested("- a", "- !open", "- !close"),
-            nested("> a", ":::n", ":::/n"),
-        ] {
-            let start = Instant::now();
-            let html = draw(&NestHost, &md);
-            let took = start.elapsed();
-            assert!(took < Duration::from_secs(1), "{took:?}");
-            assert_eq!(html.matches("<section>").count(), 24, "{html}");
+        for (before, open, close) in [("- a", "- !open", "- !close"), ("> a", ":::n", ":::/n")] {
+            let (_, fewer) = draw_counted(&nested(12, before, open, close));
+            let (html, more) = draw_counted(&nested(13, before, open, close));
+            assert!(2 * more <= 3 * fewer, "{fewer} offers, then {more}");
+            assert_eq!(html.matches("<section>").count(), 13, "{html}");
             assert!(html.contains("<section>\n<p>x</p>\n</section>"), "{html}");
         }
     }
