@@ -105,8 +105,9 @@ struct Inner<P: Host> {
     stylesheet: Option<String>,
     /// Whether a CDN asset, by its URL, carries `integrity`.
     integrity: IntegrityFn,
-    /// Decides which scripts in pages' content run; `None` runs them all.
-    script_filter: Option<scripts::Filter>,
+    /// Whether a script in a page's body runs; `None` runs them all with no
+    /// policy.
+    scripts: Option<ScriptsFn>,
     /// Keeps the index current; dropping it stops the watch. `None` for
     /// embedded files, which never change.
     _watcher: Option<Debouncer<RecommendedWatcher>>,
@@ -137,7 +138,7 @@ impl Wiki {
             base_path: String::from("/"),
             stylesheet: None,
             integrity: None,
-            script_filter: None,
+            scripts: None,
             index_storage: IndexStorage::default(),
             host: Plain,
             template: DefaultTemplate,
@@ -197,7 +198,7 @@ pub struct WikiBuilder<P: Host = Plain> {
     base_path: String,
     stylesheet: Option<String>,
     integrity: Option<IntegrityFn>,
-    script_filter: Option<scripts::Filter>,
+    scripts: Option<ScriptsFn>,
     index_storage: IndexStorage,
     host: P,
     template: P::Template,
@@ -218,7 +219,7 @@ impl<P: Host> WikiBuilder<P> {
             base_path: self.base_path,
             stylesheet: self.stylesheet,
             integrity: self.integrity,
-            script_filter: self.script_filter,
+            scripts: self.scripts,
             index_storage: self.index_storage,
             host,
             template,
@@ -265,7 +266,7 @@ impl<P: Host> WikiBuilder<P> {
 
     /// Whether the CDN asset at a URL carries subresource integrity, so the
     /// browser refuses it unless its bytes match the pinned hash. Every asset
-    /// does unless this is set. A [`script_filter`](Self::script_filter)'s
+    /// does unless this is set. A [`scripts`](Self::scripts) filter's
     /// policy allows each asset by its URL, with or without integrity.
     pub fn integrity(mut self, filter: impl Fn(&str) -> bool + Send + Sync + 'static) -> Self {
         self.integrity = Some(Arc::new(filter));
@@ -281,19 +282,16 @@ impl<P: Host> WikiBuilder<P> {
         self
     }
 
-    /// Decides which scripts in each page's body may run: everything in the
-    /// htmx root, the template's `body` and the documents' raw HTML included.
-    /// Without a filter, every script runs as written. With one, each page
+    /// Whether a script in a page's body may run: anything in the htmx root,
+    /// the template's `body` and the documents' raw HTML included. Every
+    /// script runs as written unless this is set. When it is, each page
     /// carries a Content-Security-Policy that allows the library's own
     /// scripts, those in the template's `head`, and those the filter allows;
     /// the ones it denies are removed from the page. Code evaluated from a
     /// string (`eval`, htmx's `hx-on`) never runs, nor does a script in an
     /// image the wiki serves. `|_| false` blocks every script from content.
-    pub fn script_filter(
-        mut self,
-        filter: impl Fn(&Script<'_>) -> bool + Send + Sync + 'static,
-    ) -> Self {
-        self.script_filter = Some(Arc::new(filter));
+    pub fn scripts(mut self, filter: impl Fn(&Script<'_>) -> bool + Send + Sync + 'static) -> Self {
+        self.scripts = Some(Arc::new(filter));
         self
     }
 
@@ -340,7 +338,7 @@ impl<P: Host> WikiBuilder<P> {
             &base,
             self.stylesheet.clone(),
             integrity.clone(),
-            self.script_filter.clone(),
+            self.scripts.clone(),
         )
         .await?;
         let (done, indexed) = tokio::sync::watch::channel(false);
@@ -362,7 +360,7 @@ impl<P: Host> WikiBuilder<P> {
                 index,
                 stylesheet: self.stylesheet,
                 integrity,
-                script_filter: self.script_filter,
+                scripts: self.scripts,
                 _watcher: Some(watcher),
                 indexed,
                 signals,
@@ -388,3 +386,6 @@ pub(crate) fn normalize_base(base: &str) -> String {
         format!("/{trimmed}")
     }
 }
+
+/// Whether a script in a page's body runs; see [`WikiBuilder::scripts`].
+pub(crate) type ScriptsFn = Arc<dyn Fn(&Script<'_>) -> bool + Send + Sync>;
