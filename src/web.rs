@@ -23,15 +23,47 @@ use crate::root::Root;
 use crate::tabs::PushedState;
 use crate::template::{BodyCtx, DocumentMeta, HeadCtx, PageKind, Template};
 
-const HLJS_CSS: &str =
-    "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/rose-pine-dawn.min.css";
-const HLJS_DARK_CSS: &str =
-    "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/rose-pine.min.css";
-const HLJS_JS: &str =
-    "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/highlight.min.js";
-const MERMAID_JS: &str = "https://cdn.jsdelivr.net/npm/mermaid@12/dist/mermaid.esm.min.mjs";
-const HTMX_JS: &str = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/dist/htmx.min.js";
-const HTMX_SSE_JS: &str = "https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4/dist/sse.min.js";
+/// A CDN file pinned to an exact version, with the hash the browser checks it
+/// against. Regenerate a hash when a version changes:
+/// `curl -s <url> | openssl dgst -sha384 -binary | openssl base64 -A`
+struct Asset {
+    url: &'static str,
+    integrity: &'static str,
+}
+
+impl Asset {
+    /// The `integrity` value, unless the host's filter turns it off for this URL.
+    fn integrity_for(&self, filter: &dyn Fn(&str) -> bool) -> Option<&'static str> {
+        filter(self.url).then_some(self.integrity)
+    }
+}
+
+const HLJS_CSS: Asset = Asset {
+    url: "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/rose-pine-dawn.min.css",
+    integrity: "sha384-ExEZUBEPjNplQVR6iJX1rxlKapdO+EQ2QoO1+/yvd4be+LFX6ddT5QYqcxXrKqww",
+};
+const HLJS_DARK_CSS: Asset = Asset {
+    url: "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/rose-pine.min.css",
+    integrity: "sha384-cZe61g/ynsrIHnZqg661ThK2Mwb4b8+CHPou0tFEi7Wwt04Wci7sfHzJRsN6k3QQ",
+};
+const HLJS_JS: Asset = Asset {
+    url: "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/highlight.min.js",
+    integrity: "sha384-wjfDDhOPPdjtva8vWBhWeVprSpmxisEu5aYT3q1JyACqXpdKpo3PWZTMVq24MBix",
+};
+/// The self-contained build: the ES module build imports chunk files at
+/// runtime, which an `integrity` attribute on its entry doesn't cover.
+const MERMAID_JS: Asset = Asset {
+    url: "https://cdn.jsdelivr.net/npm/mermaid@12.2.0/dist/mermaid.min.js",
+    integrity: "sha384-8xUhuLNMjW/cI2Dacg3DR4WliYznvIg0LVG1stctThKD/YVrJFI9TNCFxft5NYgp",
+};
+const HTMX_JS: Asset = Asset {
+    url: "https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/dist/htmx.min.js",
+    integrity: "sha384-2OatzQy1H+Zd/IIrjr1TcuDGqLXeHhbooAyJY1KdQMKnr4LZ22k31GBLdYKHmVjg",
+};
+const HTMX_SSE_JS: Asset = Asset {
+    url: "https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4/dist/sse.min.js",
+    integrity: "sha384-A986SAtodyH8eg8x8irJnYUk7i9inVQqYigD6qZ9evobksGNIXfeFvDwLSHcp31N",
+};
 
 /// Rosé Pine: Dawn in light mode, the main variant in dark mode.
 const STYLE: &str = "
@@ -191,6 +223,18 @@ const STATE_JS: &str = "
 })();
 ";
 
+/// Draws `pre.mermaid` blocks on load; after a live-update swap, highlights
+/// code and draws diagrams again.
+const MERMAID_INIT_JS: &str = "
+(() => {
+  const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  mermaid.initialize({ startOnLoad: true, theme: dark ? 'dark' : 'default' });
+  document.addEventListener('htmx:afterSwap', (e) => {
+    if (e.detail.target?.id === 'htmx-root') { hljs.highlightAll(); mermaid.run(); }
+  });
+})();
+";
+
 /// Line links, `#:N`: the last block in the htmx root whose `data-line` is
 /// at most N, and that is laid out, gets the `line-target` class and is
 /// scrolled to, on load and on `hashchange`. A live-update swap marks it
@@ -307,16 +351,7 @@ async fn draw_page<P: Host>(
     // Keeps the root's hx attributes off its descendants, so a host element
     // making its own htmx request isn't given `hx-select="#htmx-root"`.
     let disinherit = live.map(|_| "*");
-    let mermaid = format!(
-        "
-import mermaid from '{MERMAID_JS}';
-const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-mermaid.initialize({{ startOnLoad: true, theme: dark ? 'dark' : 'default' }});
-document.addEventListener('htmx:afterSwap', (e) => {{
-  if (e.detail.target?.id === 'htmx-root') {{ hljs.highlightAll(); mermaid.run(); }}
-}});
-"
-    );
+    let filter = &*wiki.inner.integrity;
     html! {
         (DOCTYPE)
         html {
@@ -324,16 +359,18 @@ document.addEventListener('htmx:afterSwap', (e) => {{
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (head.title()) }
-                link rel="stylesheet" href=(HLJS_CSS) media="(prefers-color-scheme: light)";
-                link rel="stylesheet" href=(HLJS_DARK_CSS) media="(prefers-color-scheme: dark)";
+                link rel="stylesheet" href=(HLJS_CSS.url) integrity=[HLJS_CSS.integrity_for(filter)]
+                    crossorigin="anonymous" media="(prefers-color-scheme: light)";
+                link rel="stylesheet" href=(HLJS_DARK_CSS.url) integrity=[HLJS_DARK_CSS.integrity_for(filter)]
+                    crossorigin="anonymous" media="(prefers-color-scheme: dark)";
                 @if !head.default_styles_suppressed() {
                     style { (PreEscaped(STYLE)) }
                 }
                 @if let Some(css) = &wiki.inner.stylesheet {
                     style { (PreEscaped(css)) }
                 }
-                script src=(HTMX_JS) {}
-                script src=(HTMX_SSE_JS) {}
+                script src=(HTMX_JS.url) integrity=[HTMX_JS.integrity_for(filter)] crossorigin="anonymous" {}
+                script src=(HTMX_SSE_JS.url) integrity=[HTMX_SSE_JS.integrity_for(filter)] crossorigin="anonymous" {}
                 (host_head)
             }
             body hx-ext=[sse] sse-connect=[events] data-tab=[tab.as_deref()] data-base=(base) {
@@ -341,9 +378,10 @@ document.addEventListener('htmx:afterSwap', (e) => {{
                     hx-swap=[swap] hx-disinherit=[disinherit] {
                     (root)
                 }
-                script src=(HLJS_JS) {}
+                script src=(HLJS_JS.url) integrity=[HLJS_JS.integrity_for(filter)] crossorigin="anonymous" {}
                 script { "hljs.highlightAll();" }
-                script type="module" { (PreEscaped(mermaid)) }
+                script src=(MERMAID_JS.url) integrity=[MERMAID_JS.integrity_for(filter)] crossorigin="anonymous" {}
+                script { (PreEscaped(MERMAID_INIT_JS)) }
                 script { (PreEscaped(LINE_JS)) }
                 script { (PreEscaped(COPY_JS)) }
                 @if tab.is_some() {
