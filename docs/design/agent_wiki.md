@@ -461,7 +461,7 @@ An open page updates when its file changes on disk.
 
 ## Host check against DNS rebinding
 
-Requested by Frederic (2026-10-28): "re: dns-rebinding, I'm fine documenting or adding a builder-helper that users can compose to enable/disable dns-rebinding protection". Without a check, a page in the user's own browser whose domain re-resolves to `127.0.0.1` reads the wiki's pages as its own origin; its requests still carry its own domain in `Host`.
+Without a check, a page in the user's own browser whose domain re-resolves to `127.0.0.1` reads the wiki's pages as its own origin; its requests still carry its own domain in `Host`.
 
 - [PROVISIONAL: the builder's `.allowed_hosts(AllowedHosts)` makes the wiki's routes refuse, with `403`, a request whose `Host` isn't on the list.]
 - [PROVISIONAL: it is opt-in: without it, the web routes answer any `Host`, and only the MCP endpoint checks, with rmcp's default list (see `mcp.md`).]
