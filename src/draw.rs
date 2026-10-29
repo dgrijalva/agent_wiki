@@ -10,7 +10,7 @@ use crate::document::slug;
 use crate::links::{Resolved, local_href, resolve};
 use crate::names::encode_path;
 use crate::parse::Host;
-use crate::tree::{Align, BlockKind, Children, InlineKind, Node, Tree};
+use crate::tree::{Align, BlockKind, Children, Fold, InlineKind, Node, Tree};
 
 /// Anything that draws itself: a host's block and inline elements, and the
 /// library's page components. Plain data; what `cx` doesn't give it, it
@@ -235,6 +235,25 @@ impl<'a, P: Host> Draw<'a, P> {
                 self.open(id, "blockquote", ">\n", out);
                 self.around(id, "", "</blockquote>\n", out);
             }
+            BlockKind::Callout { kind, fold } => {
+                let alert = alert(kind);
+                let name = if fold.is_some() { "details" } else { "div" };
+                self.open(id, name, "", out);
+                attr(
+                    out,
+                    "class",
+                    format!("markdown-alert markdown-alert-{}", alert.name),
+                );
+                if kind != alert.name {
+                    attr(out, "data-callout", kind.as_str());
+                }
+                if *fold == Some(Fold::Open) {
+                    out.push_str(" open=\"\"");
+                }
+                out.push_str(">\n");
+                self.around(id, "", &format!("</{name}>\n"), out);
+            }
+            BlockKind::CalloutTitle => self.callout_title(id, out),
             BlockKind::List { ordered: false, .. } => {
                 self.open(id, "ul", ">\n", out);
                 self.around(id, "", "</ul>\n", out);
@@ -291,6 +310,37 @@ impl<'a, P: Host> Draw<'a, P> {
             BlockKind::TableCell => self.around(id, "<td>", "</td>", out),
             BlockKind::Host(element) => self.host(id, element, out),
         }
+    }
+
+    /// A callout's title after its type's icon; the type, capitalized, when
+    /// the title has no text.
+    fn callout_title(self, id: NodeId, out: &mut String) {
+        let arena = &self.tree.arena;
+        let parent = arena[id].parent().map(|p| arena[p].get());
+        let (kind, fold) = match parent {
+            Some(Node::Block(BlockKind::Callout { kind, fold })) => (kind.as_str(), *fold),
+            _ => ("note", None),
+        };
+        let alert = alert(kind);
+        let name = if fold.is_some() { "summary" } else { "p" };
+        self.open(id, name, " class=\"markdown-alert-title\">", out);
+        out.push_str(&format!(
+            "<svg class=\"octicon octicon-{} mr-2\" viewBox=\"0 0 16 16\" version=\"1.1\" \
+             width=\"16\" height=\"16\" aria-hidden=\"true\"><path d=\"{}\"></path></svg>",
+            alert.icon, alert.path
+        ));
+        // The title is a flex container: inline content in one item keeps
+        // the spaces between its elements.
+        if arena[id].first_child().is_some() {
+            self.around(id, "<span>", "</span>", out);
+        } else {
+            let mut chars = kind.chars();
+            if let Some(first) = chars.next() {
+                first.to_uppercase().collect::<String>().render_to(out);
+                chars.as_str().render_to(out);
+            }
+        }
+        out.push_str(&format!("</{name}>\n"));
     }
 
     /// True when `id`'s parent is an item of a tight list.
@@ -462,6 +512,57 @@ impl<'a, P: Host> Draw<'a, P> {
     }
 }
 
+/// One of GitHub's alert types: its class suffix, and the Octicon its title
+/// shows, by name and 16px path.
+struct Alert {
+    name: &'static str,
+    icon: &'static str,
+    path: &'static str,
+}
+
+const NOTE: Alert = Alert {
+    name: "note",
+    icon: "info",
+    path: "M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z",
+};
+
+const TIP: Alert = Alert {
+    name: "tip",
+    icon: "light-bulb",
+    path: "M8 1.5c-2.363 0-4 1.69-4 3.75 0 .984.424 1.625.984 2.304l.214.253c.223.264.47.556.673.848.284.411.537.896.621 1.49a.75.75 0 0 1-1.484.211c-.04-.282-.163-.547-.37-.847a8.456 8.456 0 0 0-.542-.68c-.084-.1-.173-.205-.268-.32C3.201 7.75 2.5 6.766 2.5 5.25 2.5 2.31 4.863 0 8 0s5.5 2.31 5.5 5.25c0 1.516-.701 2.5-1.328 3.259-.095.115-.184.22-.268.319-.207.245-.383.453-.541.681-.208.3-.33.565-.37.847a.751.751 0 0 1-1.485-.212c.084-.593.337-1.078.621-1.489.203-.292.45-.584.673-.848.075-.088.147-.173.213-.253.561-.679.985-1.32.985-2.304 0-2.06-1.637-3.75-4-3.75ZM5.75 12h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1 0-1.5ZM6 15.25a.75.75 0 0 1 .75-.75h2.5a.75.75 0 0 1 0 1.5h-2.5a.75.75 0 0 1-.75-.75Z",
+};
+
+const IMPORTANT: Alert = Alert {
+    name: "important",
+    icon: "report",
+    path: "M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v9.5A1.75 1.75 0 0 1 14.25 13H8.06l-2.573 2.573A1.458 1.458 0 0 1 3 14.543V13H1.75A1.75 1.75 0 0 1 0 11.25Zm1.75-.25a.25.25 0 0 0-.25.25v9.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h6.5a.25.25 0 0 0 .25-.25v-9.5a.25.25 0 0 0-.25-.25Zm7 2.25v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 9a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z",
+};
+
+const WARNING: Alert = Alert {
+    name: "warning",
+    icon: "alert",
+    path: "M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575Zm1.763.707a.25.25 0 0 0-.44 0L1.698 13.132a.25.25 0 0 0 .22.368h12.164a.25.25 0 0 0 .22-.368Zm.53 3.996v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z",
+};
+
+const CAUTION: Alert = Alert {
+    name: "caution",
+    icon: "stop",
+    path: "M4.47.22A.749.749 0 0 1 5 0h6c.199 0 .389.079.53.22l4.25 4.25c.141.14.22.331.22.53v6a.749.749 0 0 1-.22.53l-4.25 4.25A.749.749 0 0 1 11 16H5a.749.749 0 0 1-.53-.22L.22 11.53A.749.749 0 0 1 0 11V5c0-.199.079-.389.22-.53Zm.84 1.28L1.5 5.31v5.38l3.81 3.81h5.38l3.81-3.81V5.31L10.69 1.5ZM8 4a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 8 4Zm0 8a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z",
+};
+
+/// The GitHub alert type a callout type is drawn as: GitHub's five as
+/// themselves, Obsidian's types and aliases by Obsidian's color, and any
+/// other type as a note.
+fn alert(kind: &str) -> &'static Alert {
+    match kind {
+        "tip" | "hint" | "abstract" | "summary" | "tldr" | "success" | "check" | "done" => &TIP,
+        "important" | "example" => &IMPORTANT,
+        "warning" | "attention" | "question" | "help" | "faq" => &WARNING,
+        "caution" | "danger" | "error" | "failure" | "fail" | "missing" | "bug" => &CAUTION,
+        _ => &NOTE,
+    }
+}
+
 /// ` name="value"`, the value escaped as maud escapes it (a `PreEscaped`
 /// value as is).
 fn attr(out: &mut String, name: &str, value: impl Render) {
@@ -591,6 +692,85 @@ mod tests {
 
     fn draw<P: Host>(t: &Tree<P>, blocks: Vec<B<P>>, cx: &DrawCx) -> String {
         draw_blocks(t, &Children::from_parsed(blocks), cx).into_string()
+    }
+
+    #[test]
+    fn callouts_draw_as_githubs_alerts() {
+        let mut t = Tree::<Plain>::new();
+        let title = t.block(
+            BlockKind::CalloutTitle,
+            Content::Inlines(Children::new(Vec::new())),
+        );
+        let body_text = text(&mut t, "Useful information.");
+        let body = para(&mut t, vec![body_text]);
+        let note = t.block(
+            BlockKind::Callout {
+                kind: "note".to_string(),
+                fold: None,
+            },
+            Content::Blocks(Children::from_parsed([title, body])),
+        );
+        // GitHub's markup, less its `dir="auto"`.
+        assert_eq!(
+            draw(&t, vec![note], &cx()),
+            "<div class=\"markdown-alert markdown-alert-note\">\n\
+             <p class=\"markdown-alert-title\"><svg class=\"octicon octicon-info mr-2\" \
+             viewBox=\"0 0 16 16\" version=\"1.1\" width=\"16\" height=\"16\" aria-hidden=\"true\">\
+             <path d=\"M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Z\
+             M6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 \
+             0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z\"></path>\
+             </svg>Note</p>\n<p>Useful information.</p>\n</div>\n"
+        );
+        // A title outside a callout is a note's.
+        let mut t = Tree::<Plain>::new();
+        let words = text(&mut t, "Loose");
+        let title = t.block(
+            BlockKind::CalloutTitle,
+            Content::Inlines(Children::from_parsed([words])),
+        );
+        let html = draw(&t, vec![title], &cx());
+        assert!(html.starts_with(
+            "<p class=\"markdown-alert-title\"><svg class=\"octicon octicon-info mr-2\""
+        ));
+        assert!(html.ends_with("</svg><span>Loose</span></p>\n"), "{html}");
+    }
+
+    #[test]
+    fn callout_types_map_onto_githubs_five() {
+        let cases = [
+            ("note", "note", "info"),
+            ("info", "note", "info"),
+            ("todo", "note", "info"),
+            ("quote", "note", "info"),
+            ("cite", "note", "info"),
+            ("anything", "note", "info"),
+            ("tip", "tip", "light-bulb"),
+            ("hint", "tip", "light-bulb"),
+            ("abstract", "tip", "light-bulb"),
+            ("summary", "tip", "light-bulb"),
+            ("tldr", "tip", "light-bulb"),
+            ("success", "tip", "light-bulb"),
+            ("check", "tip", "light-bulb"),
+            ("done", "tip", "light-bulb"),
+            ("important", "important", "report"),
+            ("example", "important", "report"),
+            ("warning", "warning", "alert"),
+            ("attention", "warning", "alert"),
+            ("question", "warning", "alert"),
+            ("help", "warning", "alert"),
+            ("faq", "warning", "alert"),
+            ("caution", "caution", "stop"),
+            ("danger", "caution", "stop"),
+            ("error", "caution", "stop"),
+            ("failure", "caution", "stop"),
+            ("fail", "caution", "stop"),
+            ("missing", "caution", "stop"),
+            ("bug", "caution", "stop"),
+        ];
+        for (kind, name, icon) in cases {
+            let alert = alert(kind);
+            assert_eq!((alert.name, alert.icon), (name, icon), "{kind}");
+        }
     }
 
     #[test]

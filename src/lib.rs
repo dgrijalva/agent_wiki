@@ -47,7 +47,9 @@ pub use crate::parse::{BlockStream, Host, InlineStream, Never, Plain};
 pub use crate::query::{Direction, Entity, Filter, Query, Sort, filter};
 pub use crate::signals::DocumentChange;
 pub use crate::template::{BodyCtx, DefaultTemplate, DocumentMeta, HeadCtx, PageKind, Template};
-pub use crate::tree::{Align, BlockKind, Children, Content, InlineKind, KindRef, NodeRef, Parsed};
+pub use crate::tree::{
+    Align, BlockKind, Children, Content, Fold, InlineKind, KindRef, NodeRef, Parsed,
+};
 pub use crate::web::CustomPage;
 
 use std::path::PathBuf;

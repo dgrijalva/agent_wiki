@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::inline::unescape;
 use super::stream::{BlockStream, Claim, Probed};
 use super::{Host, MAX_NESTING};
-use crate::tree::{Align, BlockKind, Children, Content, Node};
+use crate::tree::{Align, BlockKind, Children, Content, Fold, InlineKind, Node};
 
 /// A line, or what is left of it once container prefixes are stripped.
 #[derive(Debug, Clone, Copy)]
@@ -228,6 +228,34 @@ fn quote(line: Line<'_>) -> Option<Line<'_>> {
             line
         }
     })
+}
+
+/// The callout header `line`, a block quote's first line, is: `[!type]`,
+/// then `+` or `-` to fold, then the title. Gives the type lowercase, the
+/// fold and the title.
+fn callout_header(line: Line<'_>) -> Option<(String, Option<Fold>, &str)> {
+    if line.indent() > 3 {
+        return None;
+    }
+    let t = line.trim_start().rest.strip_prefix("[!")?;
+    let len = t.find(|c: char| c == ']' || c.is_whitespace())?;
+    if len == 0 || !t[len..].starts_with(']') {
+        return None;
+    }
+    let rest = &t[len + 1..];
+    let (fold, rest) = match rest.as_bytes().first() {
+        Some(b'+') => (Some(Fold::Open), &rest[1..]),
+        Some(b'-') => (Some(Fold::Closed), &rest[1..]),
+        _ => (None, rest),
+    };
+    if !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
+        return None;
+    }
+    Some((
+        t[..len].to_lowercase(),
+        fold,
+        rest.trim_matches([' ', '\t']),
+    ))
 }
 
 fn thematic_break(line: Line<'_>) -> bool {
@@ -783,6 +811,14 @@ impl<'a, P: Host> BlockStream<'a, P> {
     /// Blocks until the open containers end.
     pub(super) fn blocks(&mut self) -> Section {
         self.levels.push(self.frames.len());
+        let section = self.level_blocks();
+        self.levels.pop();
+        section
+    }
+
+    /// Blocks until the open containers end, in the block section open
+    /// around the position.
+    fn level_blocks(&mut self) -> Section {
         let mut section = Section::default();
         let mut blank = false;
         while let Some(Strip::Open(line)) = self.peek() {
@@ -803,7 +839,6 @@ impl<'a, P: Host> BlockStream<'a, P> {
             blank = ends_blank;
         }
         section.ends_blank = blank;
-        self.levels.pop();
         section
     }
 
@@ -839,14 +874,7 @@ impl<'a, P: Host> BlockStream<'a, P> {
         // Past the nesting limit, a container's marker is text.
         let nest = self.levels.len() < MAX_NESTING;
         if nest && quote(line).is_some() {
-            self.frames.push(Frame::Quote);
-            let body = self.blocks();
-            self.frames.pop();
-            let ids = Children::new(body.ids);
-            return (
-                vec![self.add(BlockKind::Quote, Content::Blocks(ids))],
-                false,
-            );
+            return (vec![self.block_quote()], false);
         }
         if nest && let Some(marker) = list_marker(line) {
             return self.list(marker);
@@ -855,6 +883,45 @@ impl<'a, P: Host> BlockStream<'a, P> {
             return self.table(line, align);
         }
         self.paragraph(line)
+    }
+
+    /// A block quote, or a callout when its first line is a callout header
+    /// the host doesn't claim.
+    fn block_quote(&mut self) -> NodeId {
+        self.frames.push(Frame::Quote);
+        self.levels.push(self.frames.len());
+        let start = self.pos;
+        let header = self.callout_header();
+        let body = self.level_blocks();
+        self.levels.pop();
+        self.frames.pop();
+        let Some((kind, fold, title)) = header else {
+            return self.add(BlockKind::Quote, Content::Blocks(Children::new(body.ids)));
+        };
+        let title = self.add(BlockKind::CalloutTitle, Content::Inlines(title));
+        self.tree.lines.insert(title, start + 1);
+        let ids = std::iter::once(title).chain(body.ids).collect();
+        let callout = BlockKind::Callout { kind, fold };
+        self.add(callout, Content::Blocks(Children::new(ids)))
+    }
+
+    /// The callout header on the current line, the first inside a block
+    /// quote, consumed: the type, the fold and the title.
+    fn callout_header(&mut self) -> Option<(String, Option<Fold>, Children<InlineKind<P>>)> {
+        let Some(Strip::Open(line)) = self.peek() else {
+            return None;
+        };
+        let (kind, fold, title) = callout_header(line)?;
+        if self.claims(self.frames.len(), line) {
+            return None;
+        }
+        self.pos += 1;
+        let title = if title.is_empty() {
+            Children::new(Vec::new())
+        } else {
+            self.inlines_in(title)
+        };
+        Some((kind, fold, title))
     }
 
     fn indented_code(&mut self) -> NodeId {
@@ -1348,6 +1415,16 @@ mod tests {
              </blockquote>\n\
              <p data-line=\"7\" class=\"task\">t</p>\n"
         );
+        // A callout and its title are on the header's line.
+        assert_eq!(
+            no_svg(&lined(&Plain, "p\n\n> [!warning]- T\n> x\n>\n> y\n")),
+            "<p data-line=\"1\">p</p>\n\
+             <details data-line=\"3\" class=\"markdown-alert markdown-alert-warning\">\n\
+             <summary data-line=\"3\" class=\"markdown-alert-title\"><svg/><span>T</span></summary>\n\
+             <p data-line=\"4\">x</p>\n\
+             <p data-line=\"6\">y</p>\n\
+             </details>\n"
+        );
         // Frontmatter that isn't well formed is a code block on line 1.
         assert_eq!(
             lined(&Plain, "---\n- bad\n---\nbody\n"),
@@ -1378,6 +1455,118 @@ mod tests {
         assert_eq!(
             plain("> a\n---\n"),
             "<blockquote>\n<p>a</p>\n</blockquote>\n<hr />\n"
+        );
+    }
+
+    /// `html` with each `<svg …>…</svg>` as `<svg/>`.
+    fn no_svg(html: &str) -> String {
+        let mut out = String::new();
+        let mut rest = html;
+        while let Some(at) = rest.find("<svg") {
+            out.push_str(&rest[..at]);
+            out.push_str("<svg/>");
+            let end = rest[at..].find("</svg>").expect("closed svg");
+            rest = &rest[at + end + "</svg>".len()..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[test]
+    fn callouts_are_quotes_with_a_header_line() {
+        let callout = |md: &str| no_svg(&plain(md));
+        // GitHub's alerts, as GitHub draws them; the type is case-insensitive.
+        assert_eq!(
+            callout("> [!NOTE]\n> Read *this*.\n"),
+            "<div class=\"markdown-alert markdown-alert-note\">\n\
+             <p class=\"markdown-alert-title\"><svg/>Note</p>\n\
+             <p>Read <em>this</em>.</p>\n</div>\n"
+        );
+        for kind in ["tip", "Important", "WARNING", "caution"] {
+            let lower = kind.to_lowercase();
+            assert!(
+                callout(&format!("> [!{kind}]\n> x\n")).starts_with(&format!(
+                    "<div class=\"markdown-alert markdown-alert-{lower}\">\n"
+                )),
+                "{kind}"
+            );
+        }
+        // An Obsidian type keeps its type beside the alert it is drawn as,
+        // and its title is inline content.
+        assert_eq!(
+            callout("> [!Info] A **bold** [[Title]]\n> body\n>\n> - item\n"),
+            "<div class=\"markdown-alert markdown-alert-note\" data-callout=\"info\">\n\
+             <p class=\"markdown-alert-title\"><svg/><span>A <strong>bold</strong> \
+             <a href=\"Title\" class=\"wikilink\">Title</a></span></p>\n\
+             <p>body</p>\n<ul>\n<li>item</li>\n</ul>\n</div>\n"
+        );
+        // Foldable: `+` starts open, `-` closed.
+        assert_eq!(
+            callout("> [!faq]- Why?\n> Because.\n"),
+            "<details class=\"markdown-alert markdown-alert-warning\" data-callout=\"faq\">\n\
+             <summary class=\"markdown-alert-title\"><svg/><span>Why?</span></summary>\n\
+             <p>Because.</p>\n</details>\n"
+        );
+        assert_eq!(
+            callout("> [!tip]+\n"),
+            "<details class=\"markdown-alert markdown-alert-tip\" open=\"\">\n\
+             <summary class=\"markdown-alert-title\"><svg/>Tip</summary>\n</details>\n"
+        );
+        // An unknown type is drawn as a note, titled with its type.
+        assert_eq!(
+            callout("> [!my-type]\n"),
+            "<div class=\"markdown-alert markdown-alert-note\" data-callout=\"my-type\">\n\
+             <p class=\"markdown-alert-title\"><svg/>My-type</p>\n</div>\n"
+        );
+        // Callouts nest, and sit in other containers.
+        assert_eq!(
+            callout("> [!question] Outer\n> > [!bug] Inner\n> > in\n> out\n"),
+            "<div class=\"markdown-alert markdown-alert-warning\" data-callout=\"question\">\n\
+             <p class=\"markdown-alert-title\"><svg/><span>Outer</span></p>\n\
+             <div class=\"markdown-alert markdown-alert-caution\" data-callout=\"bug\">\n\
+             <p class=\"markdown-alert-title\"><svg/><span>Inner</span></p>\n\
+             <p>in<br />\nout</p>\n</div>\n</div>\n"
+        );
+        assert_eq!(
+            callout("- > [!example]\n  > x\n"),
+            "<ul>\n<li><div class=\"markdown-alert markdown-alert-important\" \
+             data-callout=\"example\">\n\
+             <p class=\"markdown-alert-title\"><svg/>Example</p>\n<p>x</p>\n</div>\n</li>\n</ul>\n"
+        );
+        // The body is blocks from the line after the header, so the header
+        // isn't a paragraph the next line continues.
+        assert_eq!(
+            callout("> [!note]\n> 2. two\n"),
+            "<div class=\"markdown-alert markdown-alert-note\">\n\
+             <p class=\"markdown-alert-title\"><svg/>Note</p>\n\
+             <ol start=\"2\">\n<li>two</li>\n</ol>\n</div>\n"
+        );
+        assert_eq!(
+            callout("> [!note] T\nnext\n"),
+            "<div class=\"markdown-alert markdown-alert-note\">\n\
+             <p class=\"markdown-alert-title\"><svg/><span>T</span></p>\n</div>\n<p>next</p>\n"
+        );
+    }
+
+    #[test]
+    fn not_callouts() {
+        for md in [
+            "> [!note]x\n",
+            "> [!]\n",
+            "> [! note]\n",
+            "> [!note\n",
+            "> [!note]: /url\n> x\n",
+            "> text\n> [!note]\n",
+            "[!note] text\n",
+            ">     [!note]\n",
+            "    > [!note]\n",
+        ] {
+            assert!(!plain(md).contains("markdown-alert"), "{md}");
+        }
+        // The host is offered the header line first.
+        assert_eq!(
+            host("> [!banner] mine\n> x\n"),
+            "<blockquote>\n<header>mine</header>\n<p>x</p>\n</blockquote>\n"
         );
     }
 
@@ -1553,7 +1742,7 @@ mod tests {
         type Template = DefaultTemplate;
 
         fn parse_block(&self, s: &mut BlockStream<'_, Self>) -> Option<Parsed<BlockKind<Self>>> {
-            if let Some(text) = s.try_parse(preceded(tag("!! "), rest)) {
+            if let Some(text) = s.try_parse(preceded(alt((tag("!! "), tag("[!banner] "))), rest)) {
                 let text = s.inlines_in(text);
                 return Some(s.node(BlockKind::Host(TestBlock::Banner), Content::Inlines(text)));
             }
