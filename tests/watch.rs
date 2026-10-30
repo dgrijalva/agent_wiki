@@ -1,5 +1,8 @@
 use std::fs;
 use std::path::Path;
+use std::pin::pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use agent_wiki::Wiki;
@@ -133,7 +136,7 @@ async fn page_replaced_by_same_named_folder_keeps_the_folders_pages() {
     })
     .await;
     // Once every event is applied, the folder's page is still indexed.
-    sleep(Duration::from_millis(1000)).await;
+    applied_so_far(&app, dir.path()).await;
     let (_, body) = get_path(&app, "/_wiki/tag/ytag").await;
     assert!(body.contains("x.md/y"), "{body}");
     let (_, body) = get_path(&app, "/").await;
@@ -156,7 +159,7 @@ async fn folder_replaced_by_same_named_page_keeps_the_page() {
     })
     .await;
     // Once every event is applied, the page is still indexed.
-    sleep(Duration::from_millis(1000)).await;
+    applied_so_far(&app, dir.path()).await;
     let (_, body) = get_path(&app, "/_wiki/tag/xtag").await;
     assert!(body.contains(r#"href="/x#tag-0""#), "{body}");
     let (_, body) = get_path(&app, "/").await;
@@ -351,30 +354,19 @@ async fn sse_announces_changes_to_that_page() {
     write(dir.path(), "a.md", "# A\n");
     write(dir.path(), "b.md", "# B\n");
     let app = open(&dir).await;
-    let mut body = subscribe(&app, "/_wiki/events?url=%2Fa").await;
+    let mut a = subscribe(&app, "/_wiki/events?url=%2Fa").await;
+    let mut b = subscribe(&app, "/_wiki/events?url=%2Fb").await;
+    // Events from writing the pages may still be on their way.
+    applied_so_far(&app, dir.path()).await;
+    ready_text(&mut a);
 
     write(dir.path(), "b.md", "# B changed\n");
-    // Let the watcher apply `b` on its own before `a` changes.
-    sleep(Duration::from_millis(500)).await;
-    write(dir.path(), "a.md", "# A changed\n");
+    assert!(next_changed(&mut b).await.contains("data: /b"));
+    applied_so_far(&app, dir.path()).await;
+    assert_eq!(ready_text(&mut a), None, "a change to `b` reached `a`");
 
-    let mut seen = Vec::new();
-    let first = tokio::time::timeout(DEADLINE, async {
-        loop {
-            let text = next_text(&mut body).await.expect("stream ended");
-            if text.contains("event: changed") {
-                return text;
-            }
-            seen.push(text);
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("no `changed` event; frames before: {seen:?}"));
-    assert!(first.contains("data: /a"), "{first}");
-    assert!(
-        !seen.iter().any(|t| t.contains("event: changed")),
-        "{seen:?}"
-    );
+    write(dir.path(), "a.md", "# A changed\n");
+    assert!(next_changed(&mut a).await.contains("data: /a"));
 }
 
 /// With `oneshot`, the streams' only owners of the `Wiki` are the router and
@@ -416,6 +408,27 @@ async fn next_changed(body: &mut Body) -> String {
     })
     .await
     .expect("no `changed` event")
+}
+
+/// Waits until the watcher has applied every change made before the call,
+/// by writing a page and waiting for its announcement: the OS reports
+/// changes in order, and the watcher applies and announces them in order.
+async fn applied_so_far(app: &Router, root: &Path) {
+    static BARRIERS: AtomicUsize = AtomicUsize::new(0);
+    let name = format!("barrier-{}", BARRIERS.fetch_add(1, Ordering::Relaxed));
+    let mut events = subscribe(app, &format!("/_wiki/events?url=%2F{name}")).await;
+    write(root, &format!("{name}.md"), "# Barrier\n");
+    next_changed(&mut events).await;
+}
+
+/// The data frame `body` has ready, if any, without waiting for one.
+fn ready_text(body: &mut Body) -> Option<String> {
+    // Unconstrained, so tokio's task budget can't make a ready frame pend.
+    let next = pin!(tokio::task::unconstrained(next_text(body)));
+    match next.poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(text) => Some(text.expect("stream ended")),
+        Poll::Pending => None,
+    }
 }
 
 #[tokio::test]
