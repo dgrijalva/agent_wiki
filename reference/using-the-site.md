@@ -34,6 +34,7 @@ The search box at the top of every page searches titles, tags and body text, and
 - Every heading is linkable: hover it for its `#` link.
 - `#:N` on a page's URL links to line N of its source, and highlights the block holding it.
 - Ordinary links and images resolve relative to the page, or from the wiki root with a leading `/`, and never leave the root.
+- `![[image.png]]` shows an image. When no file is at that path, it finds the image by file name anywhere in the wiki, matched as a wikilink is. `![[image.png|300]]` or `![[image.png|300x200]]` sets its size. One that matches no image, or several, shows as an unresolved link.
 
 ## Live updates
 

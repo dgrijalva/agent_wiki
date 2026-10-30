@@ -453,6 +453,20 @@ async fn ordinary_links_and_images_resolve() {
 }
 
 #[tokio::test]
+async fn image_embeds_resolve_by_name_and_take_a_size() {
+    let app = root_app().await;
+    let body = ok_body(&app, "/Projects/Alpha/Links").await;
+    for needle in [
+        "<img src=\"/assets/logo.svg\" alt=\"Logo.svg\" />",
+        "<img src=\"/Projects/Alpha/diagram.png\" alt=\"diagram.png\" width=\"120\" />",
+        "<img src=\"/assets/logo.svg\" alt=\"Site logo\" width=\"64\" height=\"32\" />",
+        "<a href=\"/_wiki/link?to=nowhere.png\" class=\"wikilink unresolved\">nowhere.png</a>",
+    ] {
+        assert!(body.contains(needle), "{needle}");
+    }
+}
+
+#[tokio::test]
 async fn only_images_are_served() {
     let app = root_app().await;
     let (status, content_type, bytes) = get_raw(&app, "/Projects/Alpha/diagram.png").await;

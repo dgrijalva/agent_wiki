@@ -107,6 +107,22 @@ async fn delete_unresolves_link() {
 }
 
 #[tokio::test]
+async fn image_embeds_follow_images_added_moved_and_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "notes/a.md", "![[pic.png]]\n");
+    let app = open(&dir).await;
+    let missing = r#"href="/_wiki/link?to=pic.png" class="wikilink unresolved""#;
+    let (_, body) = get_path(&app, "/notes/a").await;
+    assert!(body.contains(missing), "{body}");
+    write(dir.path(), "assets/pic.png", "");
+    eventually_contains(&app, "/notes/a", r#"<img src="/assets/pic.png""#).await;
+    fs::rename(dir.path().join("assets"), dir.path().join("media")).unwrap();
+    eventually_contains(&app, "/notes/a", r#"<img src="/media/pic.png""#).await;
+    fs::remove_file(dir.path().join("media/pic.png")).unwrap();
+    eventually_contains(&app, "/notes/a", missing).await;
+}
+
+#[tokio::test]
 async fn folder_rename_moves_pages() {
     let dir = tempfile::tempdir().unwrap();
     write(dir.path(), "a.md", "a\n");

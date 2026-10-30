@@ -41,6 +41,8 @@ pub(crate) struct Extracted {
     /// document order, separated by spaces: what body search indexes. No
     /// frontmatter, raw HTML or URLs.
     pub(crate) body_text: String,
+    /// Image embed nodes, in document order.
+    pub(crate) embeds: Vec<NodeId>,
     /// The ordinal of each counted wikilink and inline tag node: its index
     /// in `wikilinks` or `inline_tags`.
     pub(crate) ordinals: HashMap<NodeId, usize>,
@@ -217,7 +219,8 @@ impl<P: Host> Walk<'_, P> {
                     }
                     self.body(label.as_deref().unwrap_or(target));
                 }
-                InlineKind::Embed { target, alt } => {
+                InlineKind::Embed { target, alt, .. } => {
+                    self.ex.embeds.push(id);
                     self.body(target);
                     if let Some(alt) = alt {
                         self.body(alt);
@@ -297,7 +300,9 @@ pub(crate) fn plain_text<P: Host>(tree: &Tree<P>, id: NodeId, out: &mut String) 
                 InlineKind::WikiLink { target, label } => {
                     out.push_str(label.as_deref().unwrap_or(target))
                 }
-                InlineKind::Embed { target, alt } => out.push_str(alt.as_deref().unwrap_or(target)),
+                InlineKind::Embed { target, alt, .. } => {
+                    out.push_str(alt.as_deref().unwrap_or(target))
+                }
                 InlineKind::Tag(tag) => {
                     out.push('#');
                     out.push_str(tag);

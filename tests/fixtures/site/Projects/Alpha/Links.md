@@ -24,3 +24,6 @@ Undecodable embed: ![[../../../%FF.png]]
 Query only: [query](?x=1)
 Note embed stays text: ![[Home]]
 Tag after embed: ![[diagram.png]] #linktest
+Embed by name: ![[Logo.svg]]
+Embed sized: ![[diagram.png|120]] ![[logo.svg|Site logo|64x32]]
+Embed missing: ![[nowhere.png]]

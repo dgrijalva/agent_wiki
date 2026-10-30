@@ -34,4 +34,4 @@ The reference you are reading lives at `_wiki/reference`. It is built into agent
 
 The tools only read. Edit the files on disk; the wiki notices the change and updates any open page.
 
-agent_wiki reads GitHub-flavoured markdown plus Obsidian syntax: `[[wikilinks]]`, `#tags`, YAML frontmatter, and single newlines as line breaks. A wikilink matches a file name loosely: case doesn't matter, `-` and `_` match spaces, and a leading date is ignored. `[[Page#Heading]]` links to a heading. Frontmatter `title`, `description` or `summary`, and `tags` are used for the page's title, summary and tags.
+agent_wiki reads GitHub-flavoured markdown plus Obsidian syntax: `[[wikilinks]]`, `![[image.png]]` image embeds, `#tags`, YAML frontmatter, and single newlines as line breaks. A wikilink matches a file name loosely: case doesn't matter, `-` and `_` match spaces, and a leading date is ignored. `[[Page#Heading]]` links to a heading. Frontmatter `title`, `description` or `summary`, and `tags` are used for the page's title, summary and tags.
