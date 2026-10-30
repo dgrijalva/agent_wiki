@@ -16,7 +16,7 @@ pub enum BlockKind<P: Host> {
     Heading { level: u8 },
     Quote,
     List { ordered: bool },
-    ListItem { task: Option<bool> },
+    ListItem { task: Option<TaskStatus> }, // [PROVISIONAL: a status, not a bool; see agent_wiki.md → Task statuses.]
     Code { info: String, body: String },
     Html(String),
     // …

@@ -112,7 +112,18 @@ async fn home_page_renders() {
     assert!(body.contains("<code class=\"language-rust\">"));
     assert!(body.contains("<div data-line=\"26\" class=\"raw-html-check\">raw <b>html</b></div>"));
     assert!(body.contains("First line<br"));
-    assert!(body.contains("type=\"checkbox\""));
+    assert!(body.contains("<ul data-line=\"28\" class=\"contains-task-list\">"));
+    for status in [" ", "x", "/", "-"] {
+        let item =
+            format!("class=\"task-list-item\" data-task=\"{status}\"><input type=\"checkbox\"");
+        assert!(body.contains(&item), "{item}");
+    }
+    assert!(body.contains("box.indeterminate = true"));
+    assert!(body.contains(".task-list-item[data-task=\"-\"] .task-list-item-checkbox {"));
+    assert!(body.contains(".task-list-item[data-task=\"-\"] .task-list-item-checkbox:checked {"));
+    assert!(
+        body.contains(".task-list-item[data-task=\"-\"] .task-list-item-checkbox:indeterminate {")
+    );
     assert!(body.contains("<code>#notatag</code>"));
     assert!(!body.contains("/_wiki/tag/notatag"));
     assert!(body.contains("href=\"/_wiki/tag/project/alpha\""));

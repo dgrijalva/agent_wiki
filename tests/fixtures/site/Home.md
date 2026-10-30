@@ -27,3 +27,5 @@ graph TD
 
 - [ ] open task
 - [x] done task
+- [/] doing task
+- [-] dropped task

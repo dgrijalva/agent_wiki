@@ -10,7 +10,7 @@ use crate::document::slug;
 use crate::links::{Resolved, local_href, resolve};
 use crate::names::encode_path;
 use crate::parse::Host;
-use crate::tree::{Align, BlockKind, Children, InlineKind, Node, Tree};
+use crate::tree::{Align, BlockKind, Children, InlineKind, Node, TaskStatus, Tree};
 
 /// Anything that draws itself: a host's block and inline elements, and the
 /// library's page components. Plain data; what `cx` doesn't give it, it
@@ -202,6 +202,9 @@ impl<'a, P: Host> Draw<'a, P> {
     fn block(self, id: NodeId, kind: &BlockKind<P>, out: &mut String) {
         match kind {
             BlockKind::Paragraph if self.in_tight_item(id) => {
+                if let Some(status) = self.item_task(id) {
+                    checkbox(status, out);
+                }
                 self.children(id, out);
                 if self.tree.arena[id].next_sibling().is_some() {
                     out.push('\n');
@@ -209,6 +212,9 @@ impl<'a, P: Host> Draw<'a, P> {
             }
             BlockKind::Paragraph => {
                 self.open(id, "p", ">", out);
+                if let Some(status) = self.item_task(id) {
+                    checkbox(status, out);
+                }
                 self.around(id, "", "</p>\n", out);
             }
             BlockKind::Heading { level } => {
@@ -235,29 +241,33 @@ impl<'a, P: Host> Draw<'a, P> {
                 self.open(id, "blockquote", ">\n", out);
                 self.around(id, "", "</blockquote>\n", out);
             }
-            BlockKind::List { ordered: false, .. } => {
-                self.open(id, "ul", ">\n", out);
-                self.around(id, "", "</ul>\n", out);
+            BlockKind::List { ordered, start, .. } => {
+                let name = if *ordered { "ol" } else { "ul" };
+                self.open(id, name, "", out);
+                if *ordered && *start != 1 {
+                    attr(out, "start", start);
+                }
+                if self.has_tasks(id) {
+                    attr(out, "class", "contains-task-list");
+                }
+                out.push_str(">\n");
+                self.around(id, "", &format!("</{name}>\n"), out);
             }
-            BlockKind::List {
-                ordered: true,
-                start,
-                ..
-            } => {
-                let rest = match start {
-                    1 => ">\n".to_string(),
-                    start => format!(" start=\"{start}\">\n"),
-                };
-                self.open(id, "ol", &rest, out);
-                self.around(id, "", "</ol>\n", out);
+            BlockKind::ListItem { task: None } => {
+                self.open(id, "li", ">", out);
+                self.around(id, "", "</li>\n", out);
             }
-            BlockKind::ListItem { task } => {
-                let rest = match task {
-                    Some(true) => "><input type=\"checkbox\" checked=\"\" disabled=\"\" /> ",
-                    Some(false) => "><input type=\"checkbox\" disabled=\"\" /> ",
-                    None => ">",
-                };
-                self.open(id, "li", rest, out);
+            BlockKind::ListItem { task: Some(status) } => {
+                self.open(id, "li", " class=\"task-list-item\"", out);
+                attr(out, "data-task", status.symbol());
+                out.push('>');
+                // The item's first paragraph draws the checkbox, as GitHub does.
+                let first = self.tree.arena[id].first_child();
+                if !first.is_some_and(|p| {
+                    matches!(self.tree.arena[p].get(), Node::Block(BlockKind::Paragraph))
+                }) {
+                    checkbox(*status, out);
+                }
                 self.around(id, "", "</li>\n", out);
             }
             BlockKind::Code { info, body } => {
@@ -291,6 +301,28 @@ impl<'a, P: Host> Draw<'a, P> {
             BlockKind::TableCell => self.around(id, "<td>", "</td>", out),
             BlockKind::Host(element) => self.host(id, element, out),
         }
+    }
+
+    /// The status of the task item whose first child is `id`.
+    fn item_task(self, id: NodeId) -> Option<TaskStatus> {
+        let item = self.tree.arena[id].parent()?;
+        if self.tree.arena[item].first_child() != Some(id) {
+            return None;
+        }
+        match self.tree.arena[item].get() {
+            Node::Block(BlockKind::ListItem { task }) => *task,
+            _ => None,
+        }
+    }
+
+    /// True when one of the list `id`'s items is a task.
+    fn has_tasks(self, id: NodeId) -> bool {
+        id.children(&self.tree.arena).any(|item| {
+            matches!(
+                self.tree.arena[item].get(),
+                Node::Block(BlockKind::ListItem { task: Some(_) })
+            )
+        })
     }
 
     /// True when `id`'s parent is an item of a tight list.
@@ -470,6 +502,21 @@ fn attr(out: &mut String, name: &str, value: impl Render) {
     out.push_str("=\"");
     value.render_to(out);
     out.push('"');
+}
+
+/// A task's disabled checkbox, and a space.
+fn checkbox(status: TaskStatus, out: &mut String) {
+    out.push_str("<input type=\"checkbox\" class=\"task-list-item-checkbox\"");
+    if status == TaskStatus::Done {
+        out.push_str(" checked=\"\"");
+    }
+    out.push_str(" disabled=\"\"");
+    match status {
+        TaskStatus::InProgress => attr(out, "title", "In progress"),
+        TaskStatus::Canceled => attr(out, "title", "Canceled"),
+        _ => {}
+    }
+    out.push_str(" /> ");
 }
 
 /// `html` with ` data-line="{n}"` after the name of the open tag it starts
@@ -695,23 +742,60 @@ mod tests {
         };
         let nested = item(&mut t, None, "nested", None);
         let sub = list(&mut t, false, 1, true, vec![nested]);
-        let open = item(&mut t, Some(false), "open", Some(sub));
-        let done = item(&mut t, Some(true), "done", None);
+        let open = item(&mut t, Some(TaskStatus::Open), "open", Some(sub));
+        let done = item(&mut t, Some(TaskStatus::Done), "done", None);
+        let doing = item(&mut t, Some(TaskStatus::InProgress), "doing", None);
+        let dropped = item(&mut t, Some(TaskStatus::Canceled), "dropped", None);
+        let other = item(&mut t, Some(TaskStatus::Other('"')), "other", None);
         let plain = item(&mut t, None, "plain", None);
-        let ul = list(&mut t, false, 1, true, vec![open, done, plain]);
+        let ul = list(
+            &mut t,
+            false,
+            1,
+            true,
+            vec![open, done, doing, dropped, other, plain],
+        );
         let first = item(&mut t, None, "one", None);
-        let loose = list(&mut t, true, 1, false, vec![first]);
+        let second = item(&mut t, Some(TaskStatus::InProgress), "two", None);
+        // A task item that doesn't start with a paragraph draws the
+        // checkbox itself.
+        let hr = t.block(BlockKind::ThematicBreak, Content::Leaf);
+        let third = t.block(
+            BlockKind::ListItem {
+                task: Some(TaskStatus::Done),
+            },
+            Content::Blocks(Children::from_parsed([hr])),
+        );
+        let loose = list(&mut t, true, 1, false, vec![first, second, third]);
         let fifth = item(&mut t, None, "five", None);
         let ol5 = list(&mut t, true, 5, true, vec![fifth]);
         assert_eq!(
             draw(&t, vec![ul, loose, ol5], &cx()),
-            "<ul>\n\
-             <li><input type=\"checkbox\" disabled=\"\" /> open\n\
+            "<ul class=\"contains-task-list\">\n\
+             <li class=\"task-list-item\" data-task=\" \">\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" /> open\n\
              <ul>\n<li>nested</li>\n</ul>\n</li>\n\
-             <li><input type=\"checkbox\" checked=\"\" disabled=\"\" /> done</li>\n\
+             <li class=\"task-list-item\" data-task=\"x\">\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" checked=\"\" \
+             disabled=\"\" /> done</li>\n\
+             <li class=\"task-list-item\" data-task=\"/\">\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" \
+             title=\"In progress\" /> doing</li>\n\
+             <li class=\"task-list-item\" data-task=\"-\">\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" \
+             title=\"Canceled\" /> dropped</li>\n\
+             <li class=\"task-list-item\" data-task=\"&quot;\">\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" /> \
+             other</li>\n\
              <li>plain</li>\n\
              </ul>\n\
-             <ol>\n<li><p>one</p>\n</li>\n</ol>\n\
+             <ol class=\"contains-task-list\">\n<li><p>one</p>\n</li>\n\
+             <li class=\"task-list-item\" data-task=\"/\"><p>\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled=\"\" \
+             title=\"In progress\" /> two</p>\n</li>\n\
+             <li class=\"task-list-item\" data-task=\"x\">\
+             <input type=\"checkbox\" class=\"task-list-item-checkbox\" checked=\"\" \
+             disabled=\"\" /> <hr />\n</li>\n</ol>\n\
              <ol start=\"5\">\n<li>five</li>\n</ol>\n"
         );
     }

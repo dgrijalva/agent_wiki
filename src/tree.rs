@@ -26,8 +26,8 @@ pub enum BlockKind<P: Host> {
         tight: bool,
     },
     ListItem {
-        /// `Some(checked)` for a task list item.
-        task: Option<bool>,
+        /// `Some` for a task list item.
+        task: Option<TaskStatus>,
     },
     Code {
         info: String,
@@ -43,6 +43,48 @@ pub enum BlockKind<P: Host> {
     },
     TableCell,
     Host(P::Block),
+}
+
+/// A task list item's status: the character in its `[ ]`, with the
+/// Obsidian Tasks plugin's meanings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskStatus {
+    /// `[ ]`
+    Open,
+    /// `[x]` or `[X]`
+    Done,
+    /// `[/]`
+    InProgress,
+    /// `[-]`
+    Canceled,
+    /// Any other character. The Tasks plugin treats it as open.
+    Other(char),
+}
+
+impl TaskStatus {
+    /// The status written `[c]`, or `None` when `c` doesn't make a task.
+    pub fn from_symbol(c: char) -> Option<TaskStatus> {
+        Some(match c {
+            ' ' => TaskStatus::Open,
+            'x' | 'X' => TaskStatus::Done,
+            '/' => TaskStatus::InProgress,
+            '-' => TaskStatus::Canceled,
+            '[' | ']' => return None,
+            c if c.is_whitespace() || c.is_control() => return None,
+            c => TaskStatus::Other(c),
+        })
+    }
+
+    /// The character between the brackets; `x` for done.
+    pub fn symbol(self) -> char {
+        match self {
+            TaskStatus::Open => ' ',
+            TaskStatus::Done => 'x',
+            TaskStatus::InProgress => '/',
+            TaskStatus::Canceled => '-',
+            TaskStatus::Other(c) => c,
+        }
+    }
 }
 
 /// A table column's alignment.
