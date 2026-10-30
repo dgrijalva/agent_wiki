@@ -459,6 +459,20 @@ An open page updates when its file changes on disk.
 - **Standalone binary shutdown:** the first interrupt starts a graceful shutdown and prints that it is waiting for connections to close; a second interrupt kills it. (Dave, 2026-10-20) An open page's live-update stream doesn't end on its own, so with a page open the first interrupt waits until the second.
   [OPEN: the library ending its live-update streams on shutdown, so graceful shutdown completes with pages open, for the binary and for hosts.]
 
+## Host check against DNS rebinding
+
+Without a check, a page in the user's own browser whose domain re-resolves to `127.0.0.1` reads the wiki's pages as its own origin; its requests still carry its own domain in `Host`.
+
+- [PROVISIONAL: the builder's `.allowed_hosts(AllowedHosts)` makes the wiki's routes refuse, with `403`, a request whose `Host` it doesn't allow.]
+- [PROVISIONAL: it is opt-in: without it, the web routes answer any `Host`, and only the MCP endpoint checks, with rmcp's default list (see `mcp.md`).]
+- [PROVISIONAL: `AllowedHosts::loopback()` is `localhost`, `127.0.0.1` and `[::1]` on any port; `AllowedHosts::new([…])` takes names or addresses, a bare one allowing any port and `name:port` only that port, case ignored; `AllowedHosts::any()` turns the check off, the MCP endpoint's included.] rmcp's `allowed_hosts` list is the model, and entries match as they do there.
+- [PROVISIONAL: `AllowedHosts::from_fn(|host| …)` replaces the built-in lists wholesale, as Extensibility above asks; the closure gets the host without its port, lowercased, an IPv6 address without brackets, the form `new([…])` entries match against.]
+- [PROVISIONAL: the lists stay beside the callback as the common cases, though Extensibility above prefers one default over several built-in choices.]
+- [PROVISIONAL: one check drives both: once it is set, the check wraps the whole router, the MCP endpoint and the reference included, and rmcp's own check is turned off, so the two can't disagree.] A layer an application puts around `wiki.router()` can't change rmcp's list, which is fixed inside the router, so the helper is a builder method.
+- [PROVISIONAL: a request naming no host, in `Host` or (over HTTP/2) in `:authority`, is refused, without calling a `from_fn` callback.] Browsers always send one.
+- [PROVISIONAL: the check covers only the wiki's routes; an application's own routes merged beside them are its to check.]
+- [PROVISIONAL: the standalone binary uses `AllowedHosts::loopback()`, since it binds `127.0.0.1`.]
+
 ## MCP
 
 The MCP server, its tools, and round-tripping between the web UI and the agent: see `mcp.md`.

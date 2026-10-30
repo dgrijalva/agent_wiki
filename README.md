@@ -35,7 +35,7 @@ agent_wiki <folder> [--port N] [--index <path>] [--reindex]
 
 Or from a checkout, `cargo run -- <folder>`.
 
-Serves on `127.0.0.1`, port 3000 by default. Ctrl-C starts a graceful shutdown; a second Ctrl-C quits.
+Serves on `127.0.0.1`, port 3000 by default, and only answers requests addressed to `localhost`, `127.0.0.1` or `[::1]`, against DNS rebinding. Ctrl-C starts a graceful shutdown; a second Ctrl-C quits.
 
 ### Index
 
@@ -61,7 +61,7 @@ Tools:
 
 Paths in results are relative to the wiki root; the server's instructions give the root's absolute path once, on connect, and point the agent to the reference at `_wiki/reference`. The reference is left out of search, indexes and listings, except a search whose `folder` is in `_wiki/reference`. Each document page also has a **Copy path** button that copies its root-relative path, for pasting to an agent.
 
-Local use only, for now: `open_files` reports every browser's open pages, and requests are only accepted when addressed to `localhost`, `127.0.0.1` or `::1`.
+Local use only, for now: `open_files` reports every browser's open pages, and requests are only accepted when addressed to `localhost`, `127.0.0.1` or `::1`, unless the application sets `.allowed_hosts`.
 
 ## Embedding in an axum app
 
@@ -70,12 +70,15 @@ let wiki = agent_wiki::Wiki::builder(root)
     .base_path("/docs")   // optional; default "/"
     .stylesheet(host_css) // optional; CSS layered on top of the built-in stylesheet
     .index_storage(agent_wiki::IndexStorage::FilePath(index_file)) // optional; default InMemory
+    .allowed_hosts(agent_wiki::AllowedHosts::loopback()) // optional; refuses other `Host`s, against DNS rebinding
     .build()
     .await?;
 let app = app.merge(wiki.router());
 ```
 
 Every generated URL carries the base path. The wiki's own routes live under `{base}/_wiki/`, including the MCP endpoint.
+
+`.allowed_hosts` refuses, with `403`, a request to any of the wiki's routes whose `Host` isn't listed (`AllowedHosts::loopback()`, `AllowedHosts::new(["wiki.example.com"])`, `AllowedHosts::from_fn(|host| …)` for a rule of the application's own, or `AllowedHosts::any()` for no check), and checks the MCP endpoint the same way. Without it, only the MCP endpoint checks, for loopback hosts. The binary uses `AllowedHosts::loopback()`.
 
 A host's own routes stay outside the wiki, but can draw their pages through it, with the wiki's template, styles and live updates:
 

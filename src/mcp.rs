@@ -183,9 +183,13 @@ pub(crate) type ToolsFn<P> = Arc<dyn Fn(&Wiki<P>) -> ToolRouter<McpServer<P>> + 
 pub(crate) fn service<P: Host>(
     wiki: Wiki<P>,
 ) -> StreamableHttpService<McpServer<P>, NeverSessionManager> {
-    let config = StreamableHttpServerConfig::default()
+    let mut config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
         .with_json_response(true);
+    // The router's own check covers the endpoint when it is set.
+    if wiki.inner.allowed_hosts.is_some() {
+        config = config.disable_allowed_hosts();
+    }
     let instructions: Arc<str> = instructions(wiki.inner.root.disk()).into();
     StreamableHttpService::new(
         move || {
