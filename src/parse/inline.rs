@@ -56,6 +56,14 @@ pub(super) fn inlines<P: Host>(host: &P, tree: &mut Tree<P>, refs: &[LinkRef]) {
     }
 }
 
+/// Counts `n` units of inline parsing work, for tests that check how the
+/// work grows with the input. Free outside tests.
+fn step(n: usize) {
+    #[cfg(test)]
+    tests::STEPS.with(|steps| steps.set(steps.get() + n));
+    let _ = n;
+}
+
 /// Where a nested section ends: the length of the end at the start of the
 /// input, if it is there.
 pub(super) type End<'e, 'a> = &'e mut dyn FnMut(&'a str) -> Option<usize>;
@@ -105,12 +113,19 @@ impl Links {
     }
 
     fn iter(&self) -> impl Iterator<Item = usize> + '_ {
-        std::iter::successors(self.head, |&i| self.next[i])
+        std::iter::successors(self.head, |&i| {
+            step(1);
+            self.next[i]
+        })
     }
 
     /// The indices after `a`, up to `b`.
     fn between(&self, a: usize, b: usize) -> impl Iterator<Item = usize> + '_ {
-        std::iter::successors(self.next[a], |&i| self.next[i]).take_while(move |&i| i != b)
+        std::iter::successors(self.next[a], |&i| {
+            step(1);
+            self.next[i]
+        })
+        .take_while(move |&i| i != b)
     }
 
     /// Takes out the indices between `a` and `b`, which comes after it.
@@ -159,6 +174,7 @@ impl<'a, P: Host> InlineStream<'a, P> {
     fn run(&mut self, mut end: Option<End<'_, 'a>>) -> Option<Vec<NodeId>> {
         let mut run = Run::default();
         loop {
+            step(1);
             let rest = &self.src[self.pos..];
             let Some(c) = rest.chars().next() else {
                 if end.is_some() {
@@ -241,6 +257,7 @@ impl<'a, P: Host> InlineStream<'a, P> {
             return false;
         }
         let host = self.host;
+        step(1);
         match host.parse_inline(self) {
             Some(parsed) => {
                 self.push(run, parsed.id);
@@ -421,6 +438,7 @@ impl<'a, P: Host> InlineStream<'a, P> {
             return at;
         }
         let at = self.src[from..].find(end).map(|i| from + i);
+        step(at.map_or(self.src.len(), |at| at + end.len()) - from);
         self.found.insert(end, (from, at));
         at
     }
@@ -697,6 +715,7 @@ impl<'a, P: Host> InlineStream<'a, P> {
                 && o >= floor
                 && !fits(&delims[o])
             {
+                step(1);
                 opener = stack.prev[o];
             }
             let Some(o) = opener.filter(|&o| o >= floor) else {
@@ -1125,7 +1144,7 @@ fn autolink_delim(s: &str, mut end: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::cell::Cell;
 
     use maud::{Markup, html};
     use nom::bytes::complete::{tag, take_while1};
@@ -1137,6 +1156,11 @@ mod tests {
     use crate::parse::{Never, Plain, parse};
     use crate::template::DefaultTemplate;
     use crate::tree::Parsed;
+
+    thread_local! {
+        /// [`step`]s taken on this thread.
+        pub(super) static STEPS: Cell<usize> = const { Cell::new(0) };
+    }
 
     fn draw<P: Host>(host: &P, md: &str) -> String {
         let doc = parse(host, md);
@@ -1511,13 +1535,20 @@ mod tests {
         assert_eq!(html.matches("<span").count(), MAX_NESTING - 1);
     }
 
-    /// `md` drawn with `host`, in well under a second even in a debug
-    /// build.
-    fn draw_quickly<P: Host>(host: &P, md: &str) -> String {
-        let start = Instant::now();
+    /// `md` drawn with `host`, and the [`step`]s parsing it took.
+    fn draw_counted<P: Host>(host: &P, md: &str) -> (String, usize) {
+        STEPS.set(0);
         let html = draw(host, md);
-        let took = start.elapsed();
-        assert!(took < Duration::from_secs(1), "{took:?}");
+        (html, STEPS.get())
+    }
+
+    /// `md(4 * n)` drawn with `host`, after asserting that parsing it takes
+    /// at most 5 times the steps of `md(n)`: linear work takes about 4
+    /// times, quadratic about 16.
+    fn draw_linear<P: Host>(host: &P, n: usize, md: impl Fn(usize) -> String) -> String {
+        let (_, small) = draw_counted(host, &md(n));
+        let (html, large) = draw_counted(host, &md(4 * n));
+        assert!(large <= 5 * small, "{small} steps, then {large}");
         html
     }
 
@@ -1525,23 +1556,22 @@ mod tests {
     fn a_host_none_is_not_asked_again() {
         // Each unclosed marker's `None` would otherwise be asked again from
         // the link text of the `[` it falls back to, doubling the work.
-        let md = "[OPEN: a ".repeat(25);
-        assert_eq!(
-            draw_quickly(&SampleHost, &md),
-            format!("<p>{}</p>\n", md.trim_end())
-        );
+        let md = |n| "[OPEN: a ".repeat(n);
+        let (_, fewer) = draw_counted(&SampleHost, &md(12));
+        let (html, more) = draw_counted(&SampleHost, &md(13));
+        assert!(2 * more <= 3 * fewer, "{fewer} steps, then {more}");
+        assert_eq!(html, format!("<p>{}</p>\n", md(13).trim_end()));
     }
 
     #[test]
     fn long_emphasis_and_unclosed_raw_html_are_linear() {
-        let pairs = "*a* ".repeat(20_000);
-        let html = draw_quickly(&Plain, &pairs);
-        assert_eq!(html.matches("<em>a</em>").count(), 20_000);
+        let html = draw_linear(&Plain, 500, |n| "*a* ".repeat(n));
+        assert_eq!(html.matches("<em>a</em>").count(), 2000);
         let openers = format!("{}a\n", "*".repeat(20_000));
-        assert!(draw_quickly(&Plain, &openers).contains("**a"));
+        assert!(draw(&Plain, &openers).contains("**a"));
         for open in ["<![CDATA[", "<!--", "<?", "<!X"] {
-            let md = format!("a {}\n", open.repeat(5000));
-            assert!(!draw_quickly(&Plain, &md).contains("<!"), "{open}");
+            let html = draw_linear(&Plain, 500, |n| format!("a {}\n", open.repeat(n)));
+            assert!(!html.contains("<!"), "{open}");
         }
     }
 
